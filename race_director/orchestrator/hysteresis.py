@@ -73,6 +73,13 @@ class HysteresisEngine:
             w.current_driver_number for w in current_windows if w.current_driver_number
         }
 
+        log.info(
+            "plan_swaps_start",
+            on_screen=list(on_screen),
+            swappable_slots=[s[0] for s in swappable],
+            cycle_budget=cycle_budget,
+        )
+
         swaps: list[SwapCommand] = []
 
         for candidate in ranked_drivers:
@@ -103,6 +110,20 @@ class HysteresisEngine:
                     swappable.pop(i)
                     break
 
+        if swaps:
+            log.info(
+                "plan_swaps_result",
+                planned=[
+                    {
+                        "slot": s.slot_index,
+                        "old": s.old_tla,
+                        "new": s.new_tla,
+                        "improvement": round(s.score_improvement, 3),
+                    }
+                    for s in swaps
+                ],
+            )
+
         return swaps
 
     def record_swaps(self, count: int) -> None:
@@ -118,9 +139,16 @@ class HysteresisEngine:
     ) -> list[SwapCommand]:
         """Handle sticky slots (e.g. "leader" alias) that may need updating.
         Enforces uniqueness: multiple "leader" stickies get P1, P2, P3, etc.
+        Evicts duplicates: if a sticky assigns a driver already on a non-sticky slot,
+        that non-sticky slot is evicted and replaced with next-best driver.
         """
         swaps: list[SwapCommand] = []
-        assigned_tlas: set[str] = set()
+        assigned_tlas: set[str] = {
+            w.current_tla.upper()
+            for w in current_windows
+            if not w.is_sticky and w.current_tla
+        }
+        sticky_assigned_tlas: set[str] = set()
 
         sticky_slots = [
             s for s in current_windows
@@ -172,7 +200,30 @@ class HysteresisEngine:
                         score_improvement=0.0,
                     )
                 )
-                assigned_tlas.add(target_tla.upper())
+                target_upper = target_tla.upper()
+                assigned_tlas.add(target_upper)
+                sticky_assigned_tlas.add(target_upper)
+
+        non_sticky_slots = [
+            w for w in current_windows
+            if not w.is_sticky
+        ]
+        for slot in non_sticky_slots:
+            tla_upper = (slot.current_tla or "").upper()
+            if tla_upper in sticky_assigned_tlas:
+                for r in ranked_drivers:
+                    if r.tla.upper() not in assigned_tlas:
+                        eviction = SwapCommand(
+                            slot_index=slot.slot_index,
+                            player_id=slot.player_id or 0,
+                            old_tla=slot.current_tla,
+                            new_tla=r.tla,
+                            new_driver_number=r.driver_number,
+                            score_improvement=0.0,
+                        )
+                        swaps.append(eviction)
+                        assigned_tlas.add(r.tla.upper())
+                        break
 
         return swaps
 

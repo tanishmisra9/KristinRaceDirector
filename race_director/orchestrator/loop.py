@@ -77,6 +77,12 @@ class Orchestrator:
         windows = self._adapter.get_current_windows() if self._adapter else []
         if not windows:
             return
+        log.info(
+            "tick_start",
+            tick=self._tick_count,
+            num_states=len(states),
+            num_windows=len(windows),
+        )
         ranked = self._scorer.score_all(
             states,
             windows,
@@ -96,13 +102,43 @@ class Orchestrator:
                     windows[swap.slot_index].current_driver_number = swap.new_driver_number
                     windows[swap.slot_index].assigned_at = datetime.now(UTC)
                 self._hysteresis.record_swaps(1)
+        if sticky_swaps:
+            log.info(
+                "sticky_swaps_executed",
+                swaps=[
+                    {"slot": s.slot_index, "old": s.old_tla, "new": s.new_tla}
+                    for s in sticky_swaps
+                ],
+            )
         tla_map = {n: st.tla for n, st in states.items()}
         swaps = self._hysteresis.plan_swaps(windows, ranked, tla_map, session=session)
+        swaps_executed = 0
         for swap in swaps:
             if self._adapter and self._adapter.switch_window(swap.slot_index, swap.new_tla):
+                log.info(
+                    "swap_executed",
+                    slot=swap.slot_index,
+                    old_tla=swap.old_tla,
+                    new_tla=swap.new_tla,
+                    score_improvement=round(swap.score_improvement, 3),
+                )
                 if swap.slot_index < len(windows) and windows[swap.slot_index].current_driver_number:
                     self._scorer.record_removal(windows[swap.slot_index].current_driver_number)
                 windows[swap.slot_index].current_tla = swap.new_tla
                 windows[swap.slot_index].current_driver_number = swap.new_driver_number
                 windows[swap.slot_index].assigned_at = datetime.now(UTC)
                 self._hysteresis.record_swaps(1)
+                swaps_executed += 1
+            else:
+                log.warning(
+                    "swap_failed",
+                    slot=swap.slot_index,
+                    new_tla=swap.new_tla,
+                )
+        on_screen = [w.current_tla for w in windows if w.current_tla]
+        log.info(
+            "tick_end",
+            tick=self._tick_count,
+            on_screen=on_screen,
+            swaps_executed=swaps_executed,
+        )
