@@ -26,12 +26,52 @@ class Mvf1Adapter:
         self._sticky_configs = sticky_slots or []
         self._player_ids: list[int] = []
         self._slot_state: dict[int, WindowSlot] = {}
+        self._schema_discovered: bool = False
+
+    def _discover_mutations(self) -> None:
+        """Log available GraphQL mutations for debugging."""
+        if self._schema_discovered:
+            return
+        try:
+            result = self._graphql_request("""
+                query {
+                    __schema {
+                        mutationType {
+                            fields {
+                                name
+                                args {
+                                    name
+                                    type {
+                                        name
+                                        kind
+                                        ofType { name }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            """)
+            data = result.get("data", {}).get("__schema", {}).get("mutationType", {})
+            mutations = data.get("fields", [])
+            log.info("multiviewer_mutations", names=[m["name"] for m in mutations])
+            seek = next((m for m in mutations if m["name"] == "playerSeekTo"), None)
+            if seek:
+                log.info("playerSeekTo_args", args=seek.get("args", []))
+            else:
+                log.warning("playerSeekTo_not_in_schema")
+            self._schema_discovered = True
+        except Exception as e:
+            log.debug("schema_discovery_failed", error=str(e))
 
     def is_available(self) -> bool:
         try:
             from mvf1 import MultiViewerForF1
             mv = MultiViewerForF1()
-            return bool(list(mv.players))
+            available = bool(list(mv.players))
+            if available:
+                self._discover_mutations()
+            return available
         except Exception:
             return False
 
@@ -59,7 +99,7 @@ class Mvf1Adapter:
                 cfg = self._sticky_configs[i] if i < len(self._sticky_configs) else None
                 current_driver_number = p.driver_data.get("driverNumber") if p.driver_data else None
                 assigned_at = None
-                prev = self._slot_state.get(i)
+                prev = self._slot_state.get(p.id)
                 if prev and prev.current_driver_number == current_driver_number and prev.assigned_at:
                     assigned_at = prev.assigned_at
                 else:
@@ -74,7 +114,10 @@ class Mvf1Adapter:
                     sticky_target=cfg.driver if cfg else None,
                 )
                 slots.append(slot)
-                self._slot_state[i] = slot
+                self._slot_state[p.id] = slot
+            current_player_ids = {p.id for p in players}
+            for stale_key in [k for k in self._slot_state if k not in current_player_ids]:
+                del self._slot_state[stale_key]
             return slots
         except Exception as e:
             log.warning("mvf1_get_windows_failed", error=str(e))
@@ -147,7 +190,7 @@ class Mvf1Adapter:
             log.warning("sync_to_commentary_failed", error=str(e))
             return False
 
-    def switch_window(self, slot_index: int, new_tla: str) -> bool:
+    def switch_window(self, slot_index: int, new_tla: str, player_id: int | None = None) -> bool:
         try:
             from mvf1 import MultiViewerForF1
             mv = MultiViewerForF1()
@@ -159,50 +202,72 @@ class Mvf1Adapter:
                 players = [p for p in players if p.id in self._config.player_ids]
             elif self._config.num_windows is not None:
                 players = players[: self._config.num_windows]
-            if 0 <= slot_index < len(players):
-                player = players[slot_index]
 
-                commentary = self._find_commentary_player(mv)
-                target_time = None
-                if commentary and hasattr(commentary, "state") and commentary.state:
-                    target_time = commentary.state.get("interpolatedCurrentTime") or commentary.state.get("currentTime")
-
-                player.switch_stream(new_tla)
-
-                time.sleep(self._config.sync_delay_sec)
-                mv = MultiViewerForF1()
-                new_players = sorted(
-                    [p for p in mv.players if self._is_onboard_feed(p)],
-                    key=lambda p: p.id,
-                )
-                if self._config.player_ids:
-                    new_players = [p for p in new_players if p.id in self._config.player_ids]
-                elif self._config.num_windows is not None:
-                    new_players = new_players[: self._config.num_windows]
-
-                sync_success = False
-                sync_path = "graphql"
-                if target_time is not None and 0 <= slot_index < len(new_players):
-                    new_player = new_players[slot_index]
-                    sync_success = self._sync_player_to_time(new_player.id, target_time)
-                    if not sync_success:
-                        sync_path = "fallback"
-                        sync_success = self._sync_all_to_main_broadcast(mv)
-                    log.info(
-                        "sync_result",
-                        player_id=new_player.id,
-                        target_time=target_time,
-                        success=sync_success,
-                        path=sync_path,
+            player = None
+            if player_id is not None:
+                player = next((p for p in players if p.id == player_id), None)
+                if player is None:
+                    log.warning(
+                        "player_id_not_found",
+                        player_id=player_id,
+                        available=[p.id for p in players],
                     )
+            if player is None and 0 <= slot_index < len(players):
+                player = players[slot_index]
+            if player is None:
+                log.warning("no_player_for_switch", slot=slot_index, player_id=player_id)
+                return False
 
+            commentary = self._find_commentary_player(mv)
+            target_time = None
+            if commentary and hasattr(commentary, "state") and commentary.state:
+                target_time = commentary.state.get("interpolatedCurrentTime") or commentary.state.get("currentTime")
+
+            old_ids = set(self._player_ids)
+            player.switch_stream(new_tla)
+
+            time.sleep(self._config.sync_delay_sec)
+            mv = MultiViewerForF1()
+            new_players = sorted(
+                [p for p in mv.players if self._is_onboard_feed(p)],
+                key=lambda p: p.id,
+            )
+            if self._config.player_ids:
+                new_players = [p for p in new_players if p.id in self._config.player_ids]
+            elif self._config.num_windows is not None:
+                new_players = new_players[: self._config.num_windows]
+
+            new_player = None
+            for p in sorted(new_players, key=lambda x: x.id, reverse=True):
+                if p.id not in old_ids:
+                    new_player = p
+                    break
+            if new_player is None and new_players:
+                new_player = new_players[-1]
+
+            sync_success = False
+            sync_path = "none"
+            if new_player and target_time is not None:
+                sync_success = self._sync_player_to_time(new_player.id, target_time)
+                sync_path = "graphql"
+                if not sync_success and self._config.sync_strategy == "global_fallback":
+                    sync_success = self._sync_all_to_main_broadcast(mv)
+                    sync_path = "global_fallback"
                 log.info(
-                    "mvf1_switch_success",
-                    slot=slot_index,
-                    new_tla=new_tla,
-                    player_id=new_players[slot_index].id if slot_index < len(new_players) else 0,
+                    "sync_result",
+                    player_id=new_player.id,
+                    target_time=target_time,
+                    success=sync_success,
+                    path=sync_path,
                 )
-                return True
+
+            log.info(
+                "mvf1_switch_success",
+                slot=slot_index,
+                new_tla=new_tla,
+                player_id=new_player.id if new_player else 0,
+            )
+            return True
         except Exception as e:
             log.warning("mvf1_switch_failed", slot=slot_index, tla=new_tla, error=str(e))
         return False

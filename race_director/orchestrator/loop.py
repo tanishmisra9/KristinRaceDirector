@@ -96,7 +96,7 @@ class Orchestrator:
             )
         sticky_swaps = self._hysteresis.resolve_sticky(windows, ranked)
         for swap in sticky_swaps:
-            if self._adapter and self._adapter.switch_window(swap.slot_index, swap.new_tla):
+            if self._adapter and self._adapter.switch_window(swap.slot_index, swap.new_tla, player_id=swap.player_id):
                 if swap.slot_index < len(windows):
                     windows[swap.slot_index].current_tla = swap.new_tla
                     windows[swap.slot_index].current_driver_number = swap.new_driver_number
@@ -114,7 +114,7 @@ class Orchestrator:
         swaps = self._hysteresis.plan_swaps(windows, ranked, tla_map, session=session)
         swaps_executed = 0
         for swap in swaps:
-            if self._adapter and self._adapter.switch_window(swap.slot_index, swap.new_tla):
+            if self._adapter and self._adapter.switch_window(swap.slot_index, swap.new_tla, player_id=swap.player_id):
                 log.info(
                     "swap_executed",
                     slot=swap.slot_index,

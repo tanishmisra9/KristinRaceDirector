@@ -33,7 +33,7 @@ class DryRunAdapter:
                 player_id=i + 1,
                 current_tla="",
                 current_driver_number=None,
-                assigned_at=None,
+                assigned_at=datetime.now(UTC),
                 is_sticky=cfg is not None and cfg.driver is not None,
                 sticky_target=cfg.driver if cfg else None,
             )
@@ -45,11 +45,11 @@ class DryRunAdapter:
     def get_current_windows(self) -> list[WindowSlot]:
         return self._slots
 
-    def switch_window(self, slot_index: int, new_tla: str) -> bool:
+    def switch_window(self, slot_index: int, new_tla: str, player_id: int | None = None) -> bool:
         if 0 <= slot_index < len(self._slots):
             old = self._slots[slot_index].current_tla
             self._slots[slot_index].current_tla = new_tla
-            self._slots[slot_index].current_driver_number = 0
+            self._slots[slot_index].current_driver_number = None
             self._slots[slot_index].assigned_at = datetime.now(UTC)
             log.info("dry_run_swap", slot=slot_index, old=old, new=new_tla)
             return True

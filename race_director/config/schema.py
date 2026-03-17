@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -19,6 +21,7 @@ class MultiViewerConfig(BaseModel):
     player_ids: list[int] = Field(default_factory=list)
     num_windows: int | None = None
     sync_delay_sec: float = 1.2
+    sync_strategy: Literal["seek_only", "global_fallback"] = "seek_only"
 
 
 class ScoringWeights(BaseModel):
