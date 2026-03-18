@@ -94,6 +94,20 @@ class Orchestrator:
                 "scoring_snapshot",
                 top=[{"tla": r.tla, "score": round(r.total_score, 3)} for r in ranked[:5]],
             )
+            if ranked:
+                top = ranked[0]
+                log.info(
+                    "top_driver_breakdown",
+                    tla=top.tla,
+                    interval_ahead=round(top.breakdown.interval_ahead, 3),
+                    interval_behind=round(top.breakdown.interval_behind, 3),
+                    overtake_recency=round(top.breakdown.overtake_recency, 3),
+                    position_gain=round(top.breakdown.position_gain, 3),
+                    session_phase=round(top.breakdown.session_phase, 3),
+                    position_importance=round(top.breakdown.position_importance, 3),
+                    screen_time_penalty=round(top.breakdown.screen_time_penalty, 3),
+                    incident_recovery=round(top.breakdown.incident_recovery, 3),
+                )
         sticky_swaps = self._hysteresis.resolve_sticky(windows, ranked)
         for swap in sticky_swaps:
             if self._adapter and self._adapter.switch_window(swap.slot_index, swap.new_tla, player_id=swap.player_id):

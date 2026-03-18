@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from datetime import UTC, datetime
 
@@ -206,6 +207,26 @@ class Mvf1Adapter:
         except Exception:
             return False
 
+    def _sync_via_player_sync(self, commentary_player_id: str) -> bool:
+        """Sync all players to commentary via playerSync mutation (same as pressing S)."""
+        query = """
+        mutation PlayerSync($id: ID!) {
+            playerSync(id: $id)
+        }
+        """
+        try:
+            result = self._graphql_request(
+                query,
+                variables={"id": str(commentary_player_id)},
+            )
+            if result.get("errors"):
+                log.warning("playerSync_errors", errors=result["errors"])
+                return False
+            return True
+        except Exception as e:
+            log.warning("playerSync_failed", error=str(e))
+            return False
+
     def _sync_all_to_main_broadcast(self, mv) -> bool:
         """Sync all players to main broadcast. Retries with backoff."""
         commentary = self._find_commentary_player(mv)
@@ -253,6 +274,9 @@ class Mvf1Adapter:
             target_time = None
             if commentary and hasattr(commentary, "state") and commentary.state:
                 target_time = commentary.state.get("interpolatedCurrentTime") or commentary.state.get("currentTime")
+            if target_time is not None and (math.isnan(target_time) or math.isinf(target_time)):
+                log.warning("commentary_time_invalid", target_time=target_time)
+                target_time = None
 
             old_ids = {str(p.id) for p in players}
             player.switch_stream(new_tla)
@@ -283,14 +307,20 @@ class Mvf1Adapter:
             sync_path = "none"
             if new_player and target_time is not None:
                 seek_ok = self._sync_player_to_time(new_player.id, target_time)
-                try:
-                    mv.player_sync_to_commentary()
-                    sync_success = True
-                    sync_path = "seek_then_sync" if seek_ok else "sync_only"
-                except Exception as e:
-                    log.warning("player_sync_to_commentary_failed", error=str(e))
-                    sync_success = seek_ok
-                    sync_path = "seek_only"
+                commentary_id = str(commentary.id) if commentary else None
+                if commentary_id:
+                    sync_ok = self._sync_via_player_sync(commentary_id)
+                    sync_success = sync_ok
+                    sync_path = "seek_then_playerSync" if seek_ok else "playerSync_only"
+                else:
+                    try:
+                        mv.player_sync_to_commentary()
+                        sync_success = True
+                        sync_path = "seek_then_global" if seek_ok else "global_only"
+                    except Exception as e:
+                        log.warning("sync_fallback_failed", error=str(e))
+                        sync_success = seek_ok
+                        sync_path = "seek_only"
                 log.info(
                     "sync_result",
                     player_id=new_player.id,

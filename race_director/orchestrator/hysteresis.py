@@ -13,6 +13,8 @@ from race_director.models.session import SessionInfo
 
 log = structlog.get_logger()
 
+STICKY_OVERRIDE_THRESHOLD = 0.5
+
 
 class HysteresisEngine:
     """Decides which window swaps to actually execute, enforcing stability rules."""
@@ -50,11 +52,28 @@ class HysteresisEngine:
         score_by_num: dict[int, ScoringResult] = {
             r.driver_number: r for r in ranked_drivers
         }
+        on_screen_nums: set[int] = {
+            w.current_driver_number for w in current_windows if w.current_driver_number
+        }
+        on_screen_tlas: set[str] = {
+            w.current_tla.upper() for w in current_windows if w.current_tla
+        }
+
+        best_off_screen_score = 0.0
+        for r in ranked_drivers:
+            if r.driver_number not in on_screen_nums and r.tla.upper() not in on_screen_tlas:
+                best_off_screen_score = r.total_score
+                break
 
         swappable: list[tuple[int, float]] = []
         for slot in current_windows:
             if slot.is_sticky:
-                continue
+                if slot.current_driver_number and slot.current_driver_number in score_by_num:
+                    current_score = score_by_num[slot.current_driver_number].total_score
+                    if best_off_screen_score - current_score < STICKY_OVERRIDE_THRESHOLD:
+                        continue
+                else:
+                    continue
             if slot.assigned_at:
                 dwell = (now - slot.assigned_at).total_seconds()
                 if dwell < min_dwell:
@@ -68,13 +87,6 @@ class HysteresisEngine:
             return []
 
         swappable.sort(key=lambda x: x[1])
-
-        on_screen_nums: set[int] = {
-            w.current_driver_number for w in current_windows if w.current_driver_number
-        }
-        on_screen_tlas: set[str] = {
-            w.current_tla.upper() for w in current_windows if w.current_tla
-        }
 
         log.info(
             "plan_swaps_start",
@@ -150,6 +162,13 @@ class HysteresisEngine:
         """
         swaps: list[SwapCommand] = []
         sticky_claimed_tlas: set[str] = set()
+        on_screen_nums = {w.current_driver_number for w in current_windows if w.current_driver_number}
+        on_screen_tlas = {w.current_tla.upper() for w in current_windows if w.current_tla}
+        best_off_screen_score = 0.0
+        for r in ranked_drivers:
+            if r.driver_number not in on_screen_nums and r.tla.upper() not in on_screen_tlas:
+                best_off_screen_score = r.total_score
+                break
 
         sticky_slots = [
             s for s in current_windows
@@ -190,17 +209,23 @@ class HysteresisEngine:
                             break
 
             if target_tla and target_tla.upper() != slot.current_tla.upper():
-                driver_num = target_result.driver_number if target_result else 0
-                swaps.append(
-                    SwapCommand(
-                        slot_index=slot.slot_index,
-                        player_id=slot.player_id or 0,
-                        old_tla=slot.current_tla,
-                        new_tla=target_tla,
-                        new_driver_number=driver_num,
-                        score_improvement=0.0,
+                leader_boring = False
+                if slot.sticky_target and slot.sticky_target.lower() == "leader" and target_result:
+                    leader_score = target_result.total_score
+                    if best_off_screen_score - leader_score >= STICKY_OVERRIDE_THRESHOLD:
+                        leader_boring = True
+                if not leader_boring:
+                    driver_num = target_result.driver_number if target_result else 0
+                    swaps.append(
+                        SwapCommand(
+                            slot_index=slot.slot_index,
+                            player_id=slot.player_id or 0,
+                            old_tla=slot.current_tla,
+                            new_tla=target_tla,
+                            new_driver_number=driver_num,
+                            score_improvement=0.0,
+                        )
                     )
-                )
             if target_tla:
                 sticky_claimed_tlas.add(target_tla.upper())
 

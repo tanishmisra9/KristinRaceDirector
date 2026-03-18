@@ -24,6 +24,7 @@ ENDPOINTS = [
     ("pit", "ingest_pit"),
     ("race_control", "_ingest_race_control"),
     ("car_data", "ingest_car_data"),
+    ("laps", "ingest_laps"),
 ]
 
 
@@ -34,6 +35,7 @@ class OpenF1RestProvider:
         self._config = config
         self._state = StateManager(config.scoring_params)
         self._session_key: int | None = None
+        self._grid_fetched = False
         self._running = False
         self._token_manager: OpenF1TokenManager | None = None
         if config.openf1.username and config.openf1.password:
@@ -61,6 +63,7 @@ class OpenF1RestProvider:
         if not self._session_key:
             return
         headers = await self._auth_headers()
+        await self._fetch_starting_grid(headers)
         async with httpx.AsyncClient(
             timeout=self._config.openf1.request_timeout_sec
         ) as c:
@@ -93,7 +96,10 @@ class OpenF1RestProvider:
                 data = r.json()
                 if isinstance(data, list) and data:
                     s = data[0]
-                    self._session_key = s.get("session_key")
+                    new_key = s.get("session_key")
+                    if new_key != self._session_key:
+                        self._grid_fetched = False
+                    self._session_key = new_key
                     name = s.get("session_name", "")
                     stype = "Sprint" if "sprint" in name.lower() else "Race"
                     if "qualifying" in name.lower():
@@ -110,9 +116,44 @@ class OpenF1RestProvider:
                 log.debug("session_fetch_failed", error=str(e))
 
     def _update_session_context(self) -> None:
-        """Set lap_number, grid_position from laps when available."""
-        if not self._session_key:
+        """lap_number and grid_positions are now populated by ingest_laps and _fetch_starting_grid."""
+        pass
+
+    async def _fetch_starting_grid(self, headers: dict[str, str]) -> None:
+        """Fetch starting grid once per session."""
+        if self._grid_fetched or not self._session_key:
             return
+        url = f"{self._config.openf1.base_url}/starting_grid"
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._config.openf1.request_timeout_sec
+            ) as c:
+                r = await c.get(
+                    url,
+                    params={"session_key": self._session_key},
+                    headers=headers,
+                )
+                if r.status_code == 401:
+                    return
+                r.raise_for_status()
+                data = r.json()
+                if isinstance(data, list) and data:
+                    grid: dict[int, int] = {}
+                    for rec in data:
+                        num = rec.get("driver_number")
+                        pos = rec.get("position")
+                        if num is not None and pos is not None:
+                            grid[int(num)] = int(pos)
+                    if grid:
+                        self._state.set_grid_positions(grid)
+                        self._grid_fetched = True
+                        log.info(
+                            "starting_grid_loaded",
+                            count=len(grid),
+                            sample=dict(list(grid.items())[:5]),
+                        )
+        except httpx.HTTPError as e:
+            log.debug("starting_grid_fetch_failed", error=str(e))
 
     def _ingest_race_control(self, records: list[dict]) -> None:
         self._state.ingest_race_control(records)

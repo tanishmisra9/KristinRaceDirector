@@ -195,6 +195,19 @@ class StateManager:
             if num in self._states:
                 self._states[num].grid_position = grid_pos
 
+    def ingest_laps(self, records: list[dict]) -> None:
+        """Ingest lap data — tracks current lap number per driver."""
+        max_lap = self._lap_number
+        for rec in records:
+            lap = rec.get("lap_number")
+            if lap is None:
+                continue
+            if isinstance(lap, int) and lap > max_lap:
+                max_lap = lap
+        if max_lap > self._lap_number:
+            self.set_lap_number(max_lap)
+            log.info("lap_number_updated", lap=max_lap)
+
     def set_lap_number(self, lap: int) -> None:
         self._lap_number = lap
         if self._session:
