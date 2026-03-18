@@ -212,6 +212,22 @@ class Mvf1Adapter:
         except Exception:
             return False
 
+    def _set_player_muted(self, player_id: str, muted: bool) -> bool:
+        """Mute or unmute a player via GraphQL."""
+        query = """
+        mutation PlayerSetMuted($id: ID!, $muted: Boolean) {
+            playerSetMuted(id: $id, muted: $muted)
+        }
+        """
+        try:
+            result = self._graphql_request(
+                query,
+                variables={"id": str(player_id), "muted": muted},
+            )
+            return not result.get("errors")
+        except Exception:
+            return False
+
     def _sync_via_player_sync(self, commentary_player_id: str) -> bool:
         """Sync all players to commentary via playerSync mutation (same as pressing S)."""
         query = """
@@ -338,6 +354,7 @@ class Mvf1Adapter:
                     old_player_id=old_player_id,
                     new_player_id=new_pid,
                 )
+                self._set_player_muted(new_pid, True)
 
             sync_success = False
             sync_path = "none"
@@ -412,6 +429,8 @@ class Mvf1Adapter:
                 success=sync_success,
                 path=sync_path,
             )
+
+            self._set_player_muted(str(new_player.id), False)
 
             log.info(
                 "mvf1_switch_success",

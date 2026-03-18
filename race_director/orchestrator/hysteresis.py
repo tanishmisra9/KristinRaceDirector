@@ -174,6 +174,8 @@ class HysteresisEngine:
             s for s in current_windows
             if s.is_sticky and s.sticky_target
         ]
+        if not sticky_slots:
+            return []
 
         for slot in sticky_slots:
             target_tla: str | None = None

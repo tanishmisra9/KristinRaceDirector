@@ -108,7 +108,13 @@ class Orchestrator:
                     screen_time_penalty=round(top.breakdown.screen_time_penalty, 3),
                     incident_recovery=round(top.breakdown.incident_recovery, 3),
                 )
-        sticky_swaps = self._hysteresis.resolve_sticky(windows, ranked)
+        has_sticky_targets = any(
+            w.is_sticky and w.sticky_target for w in windows
+        )
+        if has_sticky_targets:
+            sticky_swaps = self._hysteresis.resolve_sticky(windows, ranked)
+        else:
+            sticky_swaps = []
         for swap in sticky_swaps:
             if self._adapter and self._adapter.switch_window(swap.slot_index, swap.new_tla, player_id=swap.player_id):
                 if swap.slot_index < len(windows):
