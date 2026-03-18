@@ -51,6 +51,7 @@ class StateManager:
         # Pit events
         self._pit_exits: dict[int, datetime] = {}
         self._in_pit: set[int] = set()
+        self._in_pit_since: dict[int, datetime] = {}
 
         # Battle duration: consecutive samples with small gap
         self._battle_start: dict[int, datetime] = {}
@@ -260,10 +261,19 @@ class StateManager:
             except (ValueError, TypeError):
                 date = datetime.now(UTC)
 
-            self._pit_exits[num] = date
-            self._states[num].pit_exit_time = date
-            self._states[num].last_pit_lap = rec.get("lap_number")
-            self._states[num].in_pit = False
+            pit_duration = rec.get("pit_duration")
+
+            if pit_duration is not None and pit_duration > 0:
+                self._pit_exits[num] = date
+                self._states[num].pit_exit_time = date
+                self._states[num].last_pit_lap = rec.get("lap_number")
+                self._states[num].in_pit = False
+                self._in_pit.discard(num)
+                self._in_pit_since.pop(num, None)
+            else:
+                self._states[num].in_pit = True
+                self._in_pit.add(num)
+                self._in_pit_since[num] = date
 
     def ingest_race_control(self, records: list[dict]) -> None:
         now = datetime.now(UTC)
@@ -348,3 +358,11 @@ class StateManager:
         for num, st in list(self._states.items()):
             if st.recent_incident_time and now - st.recent_incident_time > incident_window:
                 st.recent_incident_time = None
+
+        pit_timeout = timedelta(seconds=60)
+        for num in list(self._in_pit):
+            if num in self._states and num in self._in_pit_since:
+                if now - self._in_pit_since[num] > pit_timeout:
+                    self._states[num].in_pit = False
+                    self._in_pit.discard(num)
+                    del self._in_pit_since[num]

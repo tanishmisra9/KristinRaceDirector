@@ -15,47 +15,48 @@ multiviewer:
   uri: "http://localhost:10101/api/graphql"
   player_ids: []
   sync_delay_sec: 1.2  # Wait before syncing new player to main broadcast
+  sync_strategy: "global_fallback"
   # num_windows: auto-detects from open player windows. Set explicitly to override.
 
 scoring_weights:
-  interval_ahead: 1.0
-  interval_behind: 0.7
-  closing_trend: 0.8
-  proximity_cluster: 0.6
-  overtake_recency: 1.2
-  pit_exit_traffic: 0.9
-  race_control_event: 1.0
-  position_importance: 0.5
-  anti_churn_penalty: -0.6
-  on_screen_retention: 0.4
-  overtake_mode_attack: 0.8
-  position_gain: 0.9
-  prolonged_battle: 0.7
-  session_phase: 0.5
-  defending_bonus: 0.6
-  incident_recovery: 0.5
-  screen_time_penalty: -0.5
+  interval_ahead: 1.2
+  interval_behind: 0.9
+  closing_trend: 1.0
+  proximity_cluster: 0.8
+  overtake_recency: 2.0
+  pit_exit_traffic: 1.0
+  race_control_event: 1.2
+  position_importance: 1.0
+  anti_churn_penalty: -0.3
+  on_screen_retention: 0.3
+  overtake_mode_attack: 1.0
+  position_gain: 1.5
+  prolonged_battle: 1.0
+  session_phase: 1.5
+  defending_bonus: 1.0
+  incident_recovery: 1.5
+  screen_time_penalty: -0.8
 
 scoring_params:
-  interval_sigmoid_midpoint_sec: 1.5
-  interval_sigmoid_steepness: 3.0
-  trend_window_samples: 8
-  overtake_decay_seconds: 30.0
-  pit_exit_window_seconds: 60.0
+  interval_sigmoid_midpoint_sec: 1.2
+  interval_sigmoid_steepness: 3.5
+  trend_window_samples: 6
+  overtake_decay_seconds: 45.0
+  pit_exit_window_seconds: 45.0
   proximity_radius_units: 500
-  prolonged_battle_midpoint_sec: 60.0
-  position_gain_max: 15
-  incident_recovery_window_sec: 90.0
-  screen_time_penalty_midpoint_sec: 120.0
-  screen_time_penalty_steepness: 0.05
+  prolonged_battle_midpoint_sec: 45.0
+  position_gain_max: 10
+  incident_recovery_window_sec: 60.0
+  screen_time_penalty_midpoint_sec: 75.0
+  screen_time_penalty_steepness: 0.08
 
 hysteresis:
-  min_dwell_seconds: 15
-  swap_improvement_threshold: 0.15
+  min_dwell_seconds: 12
+  swap_improvement_threshold: 0.12
   max_switches_per_cycle: 2
-  max_switches_per_minute: 6
-  removal_cooldown_seconds: 30
-  sprint_min_dwell_seconds: 10
+  max_switches_per_minute: 8
+  removal_cooldown_seconds: 20
+  sprint_min_dwell_seconds: 8
 
 sticky_slots:
   - slot: 0
@@ -64,7 +65,7 @@ sticky_slots:
     driver: null
 
 orchestrator:
-  tick_interval_sec: 5.0
+  tick_interval_sec: 4.0
   dry_run: false
   manual_override_file: "/tmp/race_director_pause"
 

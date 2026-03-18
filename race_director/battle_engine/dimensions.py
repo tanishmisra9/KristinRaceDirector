@@ -132,24 +132,28 @@ def score_race_control_event(state: DriverState, _params: ScoringParams) -> floa
 
 
 def score_position_importance(state: DriverState, _params: ScoringParams) -> float:
-    """Higher score for key positions: podium, points cutoff, leader."""
+    """Higher score for key positions. Stronger top-end bias."""
     pos = state.position
     if pos <= 0:
         return 0.0
 
     if pos == 1:
-        return 0.8
+        return 1.0
     if pos == 2:
-        return 0.6
+        return 0.85
     if pos == 3:
+        return 0.75
+    if 4 <= pos <= 5:
         return 0.5
+    if 6 <= pos <= 9:
+        return 0.35
     if pos == 10:
-        return 0.5
+        return 0.6
     if pos == 11:
-        return 0.4
-    if 4 <= pos <= 9:
-        return 0.3
-    return 0.1
+        return 0.5
+    if 12 <= pos <= 15:
+        return 0.15
+    return 0.05
 
 
 def score_defending_bonus(state: DriverState, params: ScoringParams) -> float:
@@ -218,13 +222,13 @@ def score_overtake_mode_attack(state: DriverState, params: ScoringParams) -> flo
 
 
 def score_position_gain(state: DriverState, params: ScoringParams) -> float:
-    """Comeback bonus: positions gained vs grid. Verstappen P20->P6 style."""
+    """Bonus for positions gained OR lost vs grid. Big movers are interesting."""
     if state.grid_position <= 0 or state.position <= 0:
         return 0.0
-    gain = state.grid_position - state.position
-    if gain <= 0:
+    delta = abs(state.grid_position - state.position)
+    if delta <= 0:
         return 0.0
-    return min(1.0, gain / params.position_gain_max)
+    return min(1.0, delta / params.position_gain_max)
 
 
 def score_prolonged_battle(state: DriverState, params: ScoringParams) -> float:
@@ -240,19 +244,24 @@ def score_session_phase(
     state: DriverState,
     session: SessionInfo | None,
 ) -> float:
-    """First-lap and restart-lap bonus. All drivers in phase get boost."""
+    """Opening lap and restart bonus. Graduated: lap 1 highest, fading by lap 3."""
     if session is None:
         return 0.0
     score = 0.0
-    if session.lap_number in (1, 2):
+    lap = session.lap_number
+    if lap == 1:
+        score += 0.8
+    elif lap == 2:
         score += 0.5
+    elif lap == 3:
+        score += 0.3
     if session.restart_lap:
-        score += 0.4
+        score += 0.5
     return min(1.0, score)
 
 
 def score_incident_recovery(state: DriverState, params: ScoringParams) -> float:
-    """Decaying bonus for drivers involved in recent incident (spin, contact)."""
+    """Spike for recent incidents. Highest in first 20s, then decay."""
     if state.recent_incident_time is None:
         return 0.0
 
@@ -260,7 +269,11 @@ def score_incident_recovery(state: DriverState, params: ScoringParams) -> float:
     if elapsed > params.incident_recovery_window_sec:
         return 0.0
 
-    return 1.0 - (elapsed / params.incident_recovery_window_sec)
+    if elapsed <= 20.0:
+        return 1.0
+    remaining = params.incident_recovery_window_sec - elapsed
+    total_decay = params.incident_recovery_window_sec - 20.0
+    return max(0.0, remaining / total_decay)
 
 
 def score_screen_time_penalty(

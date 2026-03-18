@@ -71,6 +71,8 @@ class BattleScorer:
         p = self._params
 
         for num, state in states.items():
+            if state.in_pit:
+                continue
             bd = ScoringBreakdown(
                 interval_ahead=score_interval_ahead(state, p),
                 interval_behind=score_interval_behind(state, p),

@@ -24,8 +24,9 @@ class Mvf1Adapter:
     ) -> None:
         self._config = config
         self._sticky_configs = sticky_slots or []
-        self._player_ids: list[int] = []
-        self._slot_state: dict[int, WindowSlot] = {}
+        self._slot_assignments: dict[int, str] = {}  # slot_index -> player_id (str)
+        self._slot_state: dict[int, WindowSlot] = {}  # slot_index -> WindowSlot for assigned_at
+        self._initialized: bool = False
         self._schema_discovered: bool = False
 
     def _discover_mutations(self) -> None:
@@ -81,32 +82,60 @@ class Mvf1Adapter:
             return False
         return bool(player.driver_data and player.driver_data.get("tla"))
 
+    def _get_onboard_players(self, mv=None):
+        """Fetch and filter onboard players from MultiViewer."""
+        if mv is None:
+            from mvf1 import MultiViewerForF1
+            mv = MultiViewerForF1()
+        players = [p for p in mv.players if self._is_onboard_feed(p)]
+        if self._config.player_ids:
+            config_ids_str = {str(pid) for pid in self._config.player_ids}
+            players = [p for p in players if str(p.id) in config_ids_str]
+        elif self._config.num_windows is not None:
+            players = sorted(players, key=lambda p: str(p.id))[: self._config.num_windows]
+        return players
+
     def get_current_windows(self) -> list[WindowSlot]:
         try:
             from mvf1 import MultiViewerForF1
             mv = MultiViewerForF1()
-            players = list(mv.players)
+            players = self._get_onboard_players(mv)
             # Only onboard driver feeds - never touch F1 Live, International, Data Channel, etc.
-            players = [p for p in players if self._is_onboard_feed(p)]
-            if self._config.player_ids:
-                players = [p for p in players if p.id in self._config.player_ids]
-            elif self._config.num_windows is not None:
-                players = players[: self._config.num_windows]
-            players = sorted(players, key=lambda p: p.id)
-            self._player_ids = [p.id for p in players]
+            player_by_id = {str(p.id): p for p in players}
+            current_player_ids = set(player_by_id.keys())
+            if not self._initialized or not self._slot_assignments:
+                sorted_players = sorted(players, key=lambda p: str(p.id))
+                self._slot_assignments = {i: str(p.id) for i, p in enumerate(sorted_players)}
+                self._initialized = True
+            else:
+                dead_slots = [s for s, pid in self._slot_assignments.items() if pid not in current_player_ids]
+                for s in dead_slots:
+                    del self._slot_assignments[s]
+                assigned_pids = set(self._slot_assignments.values())
+                unassigned_pids = current_player_ids - assigned_pids
+                used_slots = set(self._slot_assignments.keys())
+                max_slot = max(used_slots) if used_slots else -1
+                available_slots = sorted(set(range(max_slot + 2)) - used_slots)
+                for pid in sorted(unassigned_pids):
+                    slot_idx = available_slots.pop(0) if available_slots else max(self._slot_assignments.keys(), default=-1) + 1
+                    self._slot_assignments[slot_idx] = pid
             slots = []
-            for i, p in enumerate(players):
-                cfg = self._sticky_configs[i] if i < len(self._sticky_configs) else None
+            for slot_idx in sorted(self._slot_assignments.keys()):
+                pid = self._slot_assignments[slot_idx]
+                p = player_by_id.get(pid)
+                if p is None:
+                    continue
+                cfg = self._sticky_configs[slot_idx] if slot_idx < len(self._sticky_configs) else None
                 current_driver_number = p.driver_data.get("driverNumber") if p.driver_data else None
                 assigned_at = None
-                prev = self._slot_state.get(p.id)
+                prev = self._slot_state.get(slot_idx)
                 if prev and prev.current_driver_number == current_driver_number and prev.assigned_at:
                     assigned_at = prev.assigned_at
                 else:
                     assigned_at = datetime.now(UTC)
                 slot = WindowSlot(
-                    slot_index=i,
-                    player_id=p.id,
+                    slot_index=slot_idx,
+                    player_id=int(pid) if pid.isdigit() else 0,
                     current_tla=getattr(p, "title", ""),
                     current_driver_number=current_driver_number,
                     assigned_at=assigned_at,
@@ -114,10 +143,10 @@ class Mvf1Adapter:
                     sticky_target=cfg.driver if cfg else None,
                 )
                 slots.append(slot)
-                self._slot_state[p.id] = slot
-            current_player_ids = {p.id for p in players}
-            for stale_key in [k for k in self._slot_state if k not in current_player_ids]:
-                del self._slot_state[stale_key]
+                self._slot_state[slot_idx] = slot
+            active_slots = set(self._slot_assignments.keys())
+            for stale in [k for k in self._slot_state if k not in active_slots]:
+                del self._slot_state[stale]
             return slots
         except Exception as e:
             log.warning("mvf1_get_windows_failed", error=str(e))
@@ -154,17 +183,17 @@ class Mvf1Adapter:
             log.warning("graphql_request_failed", error=str(e))
             raise
 
-    def _sync_player_to_time(self, player_id: int, target_time: float) -> bool:
+    def _sync_player_to_time(self, player_id: int | str, target_time: float) -> bool:
         """Seek a player to absolute time via GraphQL playerSeekTo mutation."""
         query = """
-        mutation PlayerSeekTo($id: Int!, $absolute: Float) {
+        mutation PlayerSeekTo($id: ID!, $absolute: Float) {
             playerSeekTo(id: $id, absolute: $absolute)
         }
         """
         try:
             result = self._graphql_request(
                 query,
-                variables={"id": player_id, "absolute": target_time},
+                variables={"id": str(player_id), "absolute": target_time},
             )
             if result.get("errors"):
                 log.warning(
@@ -194,65 +223,74 @@ class Mvf1Adapter:
         try:
             from mvf1 import MultiViewerForF1
             mv = MultiViewerForF1()
-            players = sorted(
-                [p for p in mv.players if self._is_onboard_feed(p)],
-                key=lambda p: p.id,
-            )
-            if self._config.player_ids:
-                players = [p for p in players if p.id in self._config.player_ids]
-            elif self._config.num_windows is not None:
-                players = players[: self._config.num_windows]
+            players = self._get_onboard_players(mv)
+            player_by_id = {str(p.id): p for p in players}
 
             player = None
-            if player_id is not None:
-                player = next((p for p in players if p.id == player_id), None)
-                if player is None:
+            pid_str = str(player_id) if player_id is not None else None
+            if pid_str and pid_str in player_by_id:
+                player = player_by_id[pid_str]
+            elif slot_index in self._slot_assignments:
+                assigned_pid = self._slot_assignments[slot_index]
+                player = player_by_id.get(assigned_pid)
+            if player is None:
+                sorted_players = sorted(players, key=lambda p: str(p.id))
+                if 0 <= slot_index < len(sorted_players):
+                    player = sorted_players[slot_index]
+            if player is None:
+                if pid_str:
                     log.warning(
                         "player_id_not_found",
                         player_id=player_id,
-                        available=[p.id for p in players],
+                        available=[str(p.id) for p in players],
                     )
-            if player is None and 0 <= slot_index < len(players):
-                player = players[slot_index]
-            if player is None:
                 log.warning("no_player_for_switch", slot=slot_index, player_id=player_id)
                 return False
+
+            old_player_id = str(player.id)
 
             commentary = self._find_commentary_player(mv)
             target_time = None
             if commentary and hasattr(commentary, "state") and commentary.state:
                 target_time = commentary.state.get("interpolatedCurrentTime") or commentary.state.get("currentTime")
 
-            old_ids = set(self._player_ids)
+            old_ids = {str(p.id) for p in players}
             player.switch_stream(new_tla)
 
             time.sleep(self._config.sync_delay_sec)
             mv = MultiViewerForF1()
-            new_players = sorted(
-                [p for p in mv.players if self._is_onboard_feed(p)],
-                key=lambda p: p.id,
-            )
-            if self._config.player_ids:
-                new_players = [p for p in new_players if p.id in self._config.player_ids]
-            elif self._config.num_windows is not None:
-                new_players = new_players[: self._config.num_windows]
+            new_players = self._get_onboard_players(mv)
 
             new_player = None
-            for p in sorted(new_players, key=lambda x: x.id, reverse=True):
-                if p.id not in old_ids:
+            for p in sorted(new_players, key=lambda x: str(x.id), reverse=True):
+                if str(p.id) not in old_ids:
                     new_player = p
                     break
             if new_player is None and new_players:
                 new_player = new_players[-1]
 
+            if new_player:
+                new_pid = str(new_player.id)
+                self._slot_assignments[slot_index] = new_pid
+                log.info(
+                    "slot_assignment_updated",
+                    slot=slot_index,
+                    old_player_id=old_player_id,
+                    new_player_id=new_pid,
+                )
+
             sync_success = False
             sync_path = "none"
             if new_player and target_time is not None:
-                sync_success = self._sync_player_to_time(new_player.id, target_time)
-                sync_path = "graphql"
-                if not sync_success and self._config.sync_strategy == "global_fallback":
-                    sync_success = self._sync_all_to_main_broadcast(mv)
-                    sync_path = "global_fallback"
+                seek_ok = self._sync_player_to_time(new_player.id, target_time)
+                try:
+                    mv.player_sync_to_commentary()
+                    sync_success = True
+                    sync_path = "seek_then_sync" if seek_ok else "sync_only"
+                except Exception as e:
+                    log.warning("player_sync_to_commentary_failed", error=str(e))
+                    sync_success = seek_ok
+                    sync_path = "seek_only"
                 log.info(
                     "sync_result",
                     player_id=new_player.id,
