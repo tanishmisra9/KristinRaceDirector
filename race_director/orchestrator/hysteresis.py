@@ -77,6 +77,8 @@ class HysteresisEngine:
                     continue
             if slot.assigned_at:
                 dwell = (ref - slot.assigned_at).total_seconds()
+                if dwell < 0:
+                    dwell = float('inf')  # Clock mismatch (replay); treat as swappable
                 if dwell < min_dwell:
                     continue
             current_score = 0.0
