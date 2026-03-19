@@ -35,11 +35,12 @@ class HysteresisEngine:
         ranked_drivers: list[ScoringResult],
         driver_tla_map: dict[int, str],
         session: SessionInfo | None = None,
+        reference_time: datetime | None = None,
     ) -> list[SwapCommand]:
         """Given current windows and ranked candidates, produce swap commands."""
         self._prune_old_switches()
 
-        now = datetime.now(UTC)
+        ref = reference_time or datetime.now(UTC)
         cfg = self._config
         min_dwell = self._min_dwell(session)
 
@@ -75,7 +76,7 @@ class HysteresisEngine:
                 else:
                     continue
             if slot.assigned_at:
-                dwell = (now - slot.assigned_at).total_seconds()
+                dwell = (ref - slot.assigned_at).total_seconds()
                 if dwell < min_dwell:
                     continue
             current_score = 0.0

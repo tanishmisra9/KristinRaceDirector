@@ -84,11 +84,13 @@ class Orchestrator:
             num_states=len(states),
             num_windows=len(windows),
         )
+        ref_time = self._provider.get_reference_time()
         ranked = self._scorer.score_all(
             states,
             windows,
             session=session,
             cooldown_seconds=self._config.hysteresis.removal_cooldown_seconds,
+            reference_time=ref_time,
         )
         if self._tick_count <= self._config.orchestrator.startup_grace_ticks:
             log.info(
@@ -134,10 +136,10 @@ class Orchestrator:
                             player_id=worst_slot.player_id,
                         ):
                             if worst_slot.slot_index < len(windows) and windows[worst_slot.slot_index].current_driver_number:
-                                self._scorer.record_removal(windows[worst_slot.slot_index].current_driver_number)
+                                self._scorer.record_removal(windows[worst_slot.slot_index].current_driver_number, removed_at=ref_time)
                             windows[worst_slot.slot_index].current_tla = leader_tla
                             windows[worst_slot.slot_index].current_driver_number = current_leader
-                            windows[worst_slot.slot_index].assigned_at = datetime.now(UTC)
+                            windows[worst_slot.slot_index].assigned_at = ref_time
                             self._hysteresis.record_swaps(1)
         self._last_leader = current_leader
         if self._tick_count % 6 == 0:
@@ -171,7 +173,7 @@ class Orchestrator:
                 if swap.slot_index < len(windows):
                     windows[swap.slot_index].current_tla = swap.new_tla
                     windows[swap.slot_index].current_driver_number = swap.new_driver_number
-                    windows[swap.slot_index].assigned_at = datetime.now(UTC)
+                    windows[swap.slot_index].assigned_at = ref_time
                 self._hysteresis.record_swaps(1)
         if sticky_swaps:
             log.info(
@@ -182,7 +184,7 @@ class Orchestrator:
                 ],
             )
         tla_map = {n: st.tla for n, st in states.items()}
-        swaps = self._hysteresis.plan_swaps(windows, ranked, tla_map, session=session)
+        swaps = self._hysteresis.plan_swaps(windows, ranked, tla_map, session=session, reference_time=ref_time)
         swaps_executed = 0
         for swap in swaps:
             if self._adapter and self._adapter.switch_window(swap.slot_index, swap.new_tla, player_id=swap.player_id):
@@ -194,10 +196,10 @@ class Orchestrator:
                     score_improvement=round(swap.score_improvement, 3),
                 )
                 if swap.slot_index < len(windows) and windows[swap.slot_index].current_driver_number:
-                    self._scorer.record_removal(windows[swap.slot_index].current_driver_number)
+                    self._scorer.record_removal(windows[swap.slot_index].current_driver_number, removed_at=ref_time)
                 windows[swap.slot_index].current_tla = swap.new_tla
                 windows[swap.slot_index].current_driver_number = swap.new_driver_number
-                windows[swap.slot_index].assigned_at = datetime.now(UTC)
+                windows[swap.slot_index].assigned_at = ref_time
                 self._hysteresis.record_swaps(1)
                 swaps_executed += 1
             else:

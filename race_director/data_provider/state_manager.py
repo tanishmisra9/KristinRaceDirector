@@ -59,6 +59,13 @@ class StateManager:
         # Timestamp tracking for replay: only process new records per endpoint
         self._last_processed_date: dict[str, str] = {}
 
+        # Latest data timestamp — used as reference time for scoring (replay/live)
+        self._latest_data_time: datetime = datetime.now(UTC)
+
+    def get_reference_time(self) -> datetime:
+        """Latest timestamp seen in any data feed. Used as 'now' for scoring."""
+        return self._latest_data_time
+
     def _filter_new_records(self, endpoint: str, records: list[dict]) -> list[dict]:
         """Filter records to only those newer than the last processed date.
 
@@ -120,9 +127,11 @@ class StateManager:
             date_str = rec.get("date", "")
 
             try:
-                date = datetime.fromisoformat(date_str) if date_str else datetime.now(UTC)
+                date = datetime.fromisoformat(date_str.replace("Z", "+00:00")) if date_str else datetime.now(UTC)
             except (ValueError, TypeError):
                 date = datetime.now(UTC)
+            if date > self._latest_data_time:
+                self._latest_data_time = date
 
             interval_val: float | None = None
             is_lapped = False
@@ -181,11 +190,11 @@ class StateManager:
         elif state.interval_behind is not None and 0.1 <= state.interval_behind <= small_gap:
             in_battle = True
 
-        now = datetime.now(UTC)
+        ref = self._latest_data_time
         if in_battle:
             if driver_number not in self._battle_start:
-                self._battle_start[driver_number] = now
-            return (now - self._battle_start[driver_number]).total_seconds()
+                self._battle_start[driver_number] = ref
+            return (ref - self._battle_start[driver_number]).total_seconds()
         else:
             self._battle_start.pop(driver_number, None)
             return 0.0
@@ -207,7 +216,6 @@ class StateManager:
 
     def ingest_positions(self, records: list[dict]) -> None:
         records = self._filter_new_records("positions", records)
-        now = datetime.now(UTC)
         latest_by_driver: dict[int, tuple[str, int]] = {}
         for rec in records:
             num = rec.get("driver_number")
@@ -220,18 +228,25 @@ class StateManager:
             if num not in latest_by_driver or date_key > latest_by_driver[num][0]:
                 latest_by_driver[num] = (date_key, new_pos)
 
-        for num, (_date_str, new_pos) in latest_by_driver.items():
+        for num, (date_str, new_pos) in latest_by_driver.items():
+            try:
+                overtake_date = datetime.fromisoformat(date_str.replace("Z", "+00:00")) if date_str else datetime.now(UTC)
+            except (ValueError, TypeError):
+                overtake_date = self._latest_data_time
+            if overtake_date > self._latest_data_time:
+                self._latest_data_time = overtake_date
+
             old_pos = self._states[num].position
             if old_pos > 0 and new_pos > 0 and old_pos != new_pos:
                 positions_gained = old_pos - new_pos
                 if positions_gained >= 1:
-                    self._states[num].last_overtake_time = now
+                    self._states[num].last_overtake_time = overtake_date
                     self._states[num].was_overtaker = True
-                    self._recent_overtakes[num] = (now, True)
+                    self._recent_overtakes[num] = (overtake_date, True)
                 elif positions_gained <= -1:
-                    self._states[num].last_overtake_time = now
+                    self._states[num].last_overtake_time = overtake_date
                     self._states[num].was_overtaker = False
-                    self._recent_overtakes[num] = (now, False)
+                    self._recent_overtakes[num] = (overtake_date, False)
             self._states[num].position = new_pos
 
     def set_grid_positions(self, grid_positions: dict[int, int]) -> None:
@@ -263,6 +278,8 @@ class StateManager:
         if latest_lap != self._lap_number:
             self.set_lap_number(latest_lap)
             log.info("lap_number_updated", lap=latest_lap)
+        if latest_date is not None and latest_date > self._latest_data_time:
+            self._latest_data_time = latest_date
 
     def set_lap_number(self, lap: int) -> None:
         self._lap_number = lap
@@ -286,9 +303,11 @@ class StateManager:
 
             date_str = rec.get("date", "")
             try:
-                date = datetime.fromisoformat(date_str) if date_str else datetime.now(UTC)
+                date = datetime.fromisoformat(date_str.replace("Z", "+00:00")) if date_str else datetime.now(UTC)
             except (ValueError, TypeError):
                 date = datetime.now(UTC)
+            if date > self._latest_data_time:
+                self._latest_data_time = date
 
             self._states[num].location = LocationSample(
                 x=rec.get("x", 0),
@@ -302,9 +321,11 @@ class StateManager:
         for rec in records:
             date_str = rec.get("date", "")
             try:
-                date = datetime.fromisoformat(date_str) if date_str else datetime.now(UTC)
+                date = datetime.fromisoformat(date_str.replace("Z", "+00:00")) if date_str else datetime.now(UTC)
             except (ValueError, TypeError):
                 date = datetime.now(UTC)
+            if date > self._latest_data_time:
+                self._latest_data_time = date
 
             overtaker = rec.get("overtaking_driver_number")
             overtaken = rec.get("overtaken_driver_number")
@@ -328,9 +349,11 @@ class StateManager:
 
             date_str = rec.get("date", "")
             try:
-                date = datetime.fromisoformat(date_str) if date_str else datetime.now(UTC)
+                date = datetime.fromisoformat(date_str.replace("Z", "+00:00")) if date_str else datetime.now(UTC)
             except (ValueError, TypeError):
                 date = datetime.now(UTC)
+            if date > self._latest_data_time:
+                self._latest_data_time = date
 
             self._states[num].pit_exit_time = date
             self._states[num].last_pit_lap = rec.get("lap_number")
@@ -340,8 +363,15 @@ class StateManager:
 
     def ingest_race_control(self, records: list[dict]) -> None:
         records = self._filter_new_records("race_control", records)
-        now = datetime.now(UTC)
         for rec in records:
+            date_str = rec.get("date", "")
+            try:
+                rec_date = datetime.fromisoformat(date_str.replace("Z", "+00:00")) if date_str else datetime.now(UTC)
+            except (ValueError, TypeError):
+                rec_date = datetime.now(UTC)
+            if rec_date > self._latest_data_time:
+                self._latest_data_time = rec_date
+
             category = rec.get("category", "")
             flag = rec.get("flag")
             message = (rec.get("message", "") or "").lower()
@@ -367,14 +397,14 @@ class StateManager:
                         break
 
             if driver_num and driver_num in self._states and flag:
-                self._driver_flags[driver_num] = (flag, now)
+                self._driver_flags[driver_num] = (flag, rec_date)
                 self._states[driver_num].has_active_flag = True
                 self._states[driver_num].active_flag_type = flag
 
             if driver_num and driver_num in self._states:
                 for kw in INCIDENT_KEYWORDS:
                     if kw in message:
-                        self._states[driver_num].recent_incident_time = now
+                        self._states[driver_num].recent_incident_time = rec_date
                         break
 
         for st in self._states.values():
@@ -408,25 +438,25 @@ class StateManager:
             self._states[num].championship_points = rec.get("points_current")
 
     def expire_stale_events(self) -> None:
-        now = datetime.now(UTC)
+        ref = self._latest_data_time
         flag_window = timedelta(seconds=60)
         incident_window = timedelta(seconds=self._params.incident_recovery_window_sec)
 
         for num in list(self._driver_flags):
             flag_type, ts = self._driver_flags[num]
-            if now - ts > flag_window and num in self._states:
+            if ref - ts > flag_window and num in self._states:
                 self._states[num].has_active_flag = False
                 self._states[num].active_flag_type = None
                 del self._driver_flags[num]
 
         for num, st in list(self._states.items()):
-            if st.recent_incident_time and now - st.recent_incident_time > incident_window:
+            if st.recent_incident_time and ref - st.recent_incident_time > incident_window:
                 st.recent_incident_time = None
 
         pit_timeout = timedelta(seconds=60)
         for num in list(self._in_pit):
             if num in self._states and num in self._in_pit_since:
-                if now - self._in_pit_since[num] > pit_timeout:
+                if ref - self._in_pit_since[num] > pit_timeout:
                     self._states[num].in_pit = False
                     self._in_pit.discard(num)
                     del self._in_pit_since[num]

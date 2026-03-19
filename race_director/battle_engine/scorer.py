@@ -41,17 +41,17 @@ class BattleScorer:
         self._params = params
         self._recently_removed: dict[int, datetime] = {}
 
-    def record_removal(self, driver_number: int) -> None:
+    def record_removal(self, driver_number: int, removed_at: datetime | None = None) -> None:
         """Mark a driver as recently removed from a window (for anti-churn)."""
-        self._recently_removed[driver_number] = datetime.now(UTC)
+        self._recently_removed[driver_number] = removed_at if removed_at is not None else datetime.now(UTC)
 
-    def cleanup_removals(self, cooldown_seconds: float) -> None:
+    def cleanup_removals(self, cooldown_seconds: float, reference_time: datetime | None = None) -> None:
         """Expire old removal records."""
-        now = datetime.now(UTC)
+        ref = reference_time or datetime.now(UTC)
         expired = [
             num
             for num, ts in self._recently_removed.items()
-            if (now - ts).total_seconds() > cooldown_seconds
+            if (ref - ts).total_seconds() > cooldown_seconds
         ]
         for num in expired:
             del self._recently_removed[num]
@@ -62,15 +62,15 @@ class BattleScorer:
         current_windows: list[WindowSlot],
         session: SessionInfo | None = None,
         cooldown_seconds: float = 30.0,
+        reference_time: datetime | None = None,
     ) -> list[ScoringResult]:
         """Score every driver, return results sorted by total_score descending."""
-        self.cleanup_removals(cooldown_seconds)
+        ref_time = reference_time or datetime.now(UTC)
+        self.cleanup_removals(cooldown_seconds, ref_time)
 
         results: list[ScoringResult] = []
         w = self._weights
         p = self._params
-
-        now = datetime.now(UTC)
         for num, state in states.items():
             if state.in_pit:
                 continue
@@ -81,33 +81,33 @@ class BattleScorer:
             ):
                 exit_time = state.pit_exit_time
                 if exit_time.tzinfo is None:
-                    exit_time = exit_time.replace(tzinfo=now.tzinfo)
-                elapsed_since_pit = (now - exit_time).total_seconds()
+                    exit_time = exit_time.replace(tzinfo=ref_time.tzinfo)
+                elapsed_since_pit = (ref_time - exit_time).total_seconds()
                 if elapsed_since_pit < 30:
                     continue
             bd = ScoringBreakdown(
                 interval_ahead=score_interval_ahead(state, p),
                 interval_behind=score_interval_behind(state, p),
                 closing_trend=score_closing_trend(state, p),
-                proximity_cluster=score_proximity_cluster(state, states, p),
-                overtake_recency=score_overtake_recency(state, p),
-                pit_exit_traffic=score_pit_exit_traffic(state, p),
+                proximity_cluster=score_proximity_cluster(state, states, p, ref_time),
+                overtake_recency=score_overtake_recency(state, p, ref_time),
+                pit_exit_traffic=score_pit_exit_traffic(state, p, ref_time),
                 race_control_event=score_race_control_event(state, p),
                 position_importance=score_position_importance(state, p),
                 anti_churn_penalty=score_anti_churn_penalty(
-                    state, self._recently_removed, cooldown_seconds
+                    state, self._recently_removed, cooldown_seconds, ref_time
                 ),
                 on_screen_retention=score_on_screen_retention(
-                    state, current_windows, states, p
+                    state, current_windows, states, p, ref_time
                 ),
                 overtake_mode_attack=score_overtake_mode_attack(state, p),
                 position_gain=score_position_gain(state, p),
                 prolonged_battle=score_prolonged_battle(state, p),
                 session_phase=score_session_phase(state, session),
                 defending_bonus=score_defending_bonus(state, p),
-                incident_recovery=score_incident_recovery(state, p),
+                incident_recovery=score_incident_recovery(state, p, ref_time),
                 screen_time_penalty=score_screen_time_penalty(
-                    state, current_windows, p
+                    state, current_windows, p, ref_time
                 ),
             )
 

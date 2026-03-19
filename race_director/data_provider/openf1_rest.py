@@ -220,6 +220,9 @@ class OpenF1RestProvider:
         except httpx.HTTPError:
             pass
 
+    def get_reference_time(self):
+        return self._state.get_reference_time()
+
     def get_driver_states(self):
         return self._state.get_driver_states()
 

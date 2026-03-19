@@ -48,6 +48,7 @@ def score_proximity_cluster(
     state: DriverState,
     all_states: dict[int, DriverState],
     params: ScoringParams,
+    reference_time: datetime,
 ) -> float:
     """Score based on how many cars are physically near this driver on track."""
     if state.location is None:
@@ -56,7 +57,7 @@ def score_proximity_cluster(
     x0, y0 = state.location.x, state.location.y
     radius = params.proximity_radius_units
     count = 0
-    cutoff = datetime.now(UTC) - timedelta(seconds=15)
+    cutoff = reference_time - timedelta(seconds=15)
 
     for num, other in all_states.items():
         if num == state.driver_number:
@@ -76,12 +77,12 @@ def score_proximity_cluster(
     return 1.0
 
 
-def score_overtake_recency(state: DriverState, params: ScoringParams) -> float:
+def score_overtake_recency(state: DriverState, params: ScoringParams, reference_time: datetime) -> float:
     """Decaying bonus for drivers involved in a recent overtake."""
     if state.last_overtake_time is None:
         return 0.0
 
-    elapsed = (datetime.now(UTC) - state.last_overtake_time).total_seconds()
+    elapsed = (reference_time - state.last_overtake_time).total_seconds()
     if elapsed > params.overtake_decay_seconds:
         return 0.0
 
@@ -91,12 +92,12 @@ def score_overtake_recency(state: DriverState, params: ScoringParams) -> float:
     return base
 
 
-def score_pit_exit_traffic(state: DriverState, params: ScoringParams) -> float:
+def score_pit_exit_traffic(state: DriverState, params: ScoringParams, reference_time: datetime) -> float:
     """Boost for drivers who recently exited the pits and have close gaps."""
     if state.pit_exit_time is None:
         return 0.0
 
-    elapsed = (datetime.now(UTC) - state.pit_exit_time).total_seconds()
+    elapsed = (reference_time - state.pit_exit_time).total_seconds()
     if elapsed > params.pit_exit_window_seconds:
         return 0.0
 
@@ -132,36 +133,32 @@ def score_race_control_event(state: DriverState, _params: ScoringParams) -> floa
 
 
 def score_position_importance(state: DriverState, _params: ScoringParams) -> float:
-    """Score based on position AND whether it's contested.
-    In 2026, any position in a close battle is interesting.
-    Points positions (P1-P10) get a base boost; intervals matter more.
-    """
+    """Higher score for key positions: podium > points cutoff > midfield."""
     pos = state.position
     if pos <= 0:
         return 0.0
-
     if pos == 1:
-        return 0.7
+        return 1.0
     if pos == 2:
-        return 0.6
+        return 0.9
     if pos == 3:
-        return 0.55
-    if 4 <= pos <= 5:
-        return 0.4
-    if 6 <= pos <= 9:
-        return 0.3
-    if pos == 10:
+        return 0.8
+    if pos == 4:
         return 0.5
-    if pos == 11:
+    if pos == 5:
         return 0.4
-    if 12 <= pos <= 15:
+    if pos == 10:
+        return 0.35
+    if pos == 11:
+        return 0.3
+    if 6 <= pos <= 9:
         return 0.2
     return 0.1
 
 
 def score_defending_bonus(state: DriverState, params: ScoringParams) -> float:
-    """Extra boost when defending a key position (P1-P3) with close pressure behind."""
-    if state.position not in (1, 2, 3):
+    """Extra boost when defending a key position (P1-P4) with close pressure behind."""
+    if state.position not in (1, 2, 3, 4):
         return 0.0
     if state.interval_behind is None or state.interval_behind <= 0:
         return 0.0
@@ -175,13 +172,14 @@ def score_anti_churn_penalty(
     state: DriverState,
     recently_removed: dict[int, datetime],
     cooldown_seconds: float,
+    reference_time: datetime,
 ) -> float:
     """Penalty for recently removed drivers (positive value, applied with negative weight)."""
     removal_time = recently_removed.get(state.driver_number)
     if removal_time is None:
         return 0.0
 
-    elapsed = (datetime.now(UTC) - removal_time).total_seconds()
+    elapsed = (reference_time - removal_time).total_seconds()
     if elapsed > cooldown_seconds:
         return 0.0
 
@@ -193,6 +191,7 @@ def score_on_screen_retention(
     current_windows: list[WindowSlot],
     all_states: dict[int, DriverState],
     params: ScoringParams,
+    reference_time: datetime,
 ) -> float:
     """Bonus for drivers currently on screen who are still interesting."""
     on_screen = any(w.current_driver_number == state.driver_number for w in current_windows)
@@ -205,7 +204,7 @@ def score_on_screen_retention(
     elif state.interval_behind is not None and state.interval_behind < 2.0:
         base_interest = 0.6
     elif state.last_overtake_time is not None:
-        elapsed = (datetime.now(UTC) - state.last_overtake_time).total_seconds()
+        elapsed = (reference_time - state.last_overtake_time).total_seconds()
         if elapsed < params.overtake_decay_seconds:
             base_interest = 0.7
 
@@ -263,12 +262,12 @@ def score_session_phase(
     return min(1.0, score)
 
 
-def score_incident_recovery(state: DriverState, params: ScoringParams) -> float:
+def score_incident_recovery(state: DriverState, params: ScoringParams, reference_time: datetime) -> float:
     """Spike for recent incidents. Highest in first 20s, then decay."""
     if state.recent_incident_time is None:
         return 0.0
 
-    elapsed = (datetime.now(UTC) - state.recent_incident_time).total_seconds()
+    elapsed = (reference_time - state.recent_incident_time).total_seconds()
     if elapsed > params.incident_recovery_window_sec:
         return 0.0
 
@@ -283,18 +282,18 @@ def score_screen_time_penalty(
     state: DriverState,
     current_windows: list[WindowSlot],
     params: ScoringParams,
+    reference_time: datetime,
 ) -> float:
     """Penalty for drivers who have been on screen a long time (applied with negative weight).
     Encourages variety by reducing score for drivers we've been showing.
     """
-    now = datetime.now(UTC)
     time_on_screen_sec = 0.0
     for w in current_windows:
         if w.current_driver_number == state.driver_number and w.assigned_at:
             at = w.assigned_at
             if at.tzinfo is None:
                 at = at.replace(tzinfo=UTC)
-            elapsed = (now - at).total_seconds()
+            elapsed = (reference_time - at).total_seconds()
             time_on_screen_sec = max(time_on_screen_sec, elapsed)
     if time_on_screen_sec <= 0:
         return 0.0

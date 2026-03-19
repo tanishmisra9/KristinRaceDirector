@@ -26,7 +26,7 @@ scoring_weights:
   overtake_recency: 3.0
   pit_exit_traffic: 0.8
   race_control_event: 1.5
-  position_importance: 0.8
+  position_importance: 1.5
   anti_churn_penalty: -0.2
   on_screen_retention: 0.2
   overtake_mode_attack: 1.0

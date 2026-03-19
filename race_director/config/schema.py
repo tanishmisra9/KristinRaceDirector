@@ -32,7 +32,7 @@ class ScoringWeights(BaseModel):
     overtake_recency: float = 3.0
     pit_exit_traffic: float = 0.8
     race_control_event: float = 1.5
-    position_importance: float = 0.8
+    position_importance: float = 1.5
     anti_churn_penalty: float = -0.2
     on_screen_retention: float = 0.2
     overtake_mode_attack: float = 1.0
