@@ -25,6 +25,8 @@ def score_interval_ahead(state: DriverState, params: ScoringParams) -> float:
     if state.interval_to_ahead is None or state.is_lapped:
         return 0.0
     gap = abs(state.interval_to_ahead)
+    if gap == 0.0 and state.position != 1:
+        return 0.0  # Data artifact, not a real battle
     return sigmoid(gap, params.interval_sigmoid_midpoint_sec, params.interval_sigmoid_steepness)
 
 
@@ -82,7 +84,7 @@ def score_overtake_recency(state: DriverState, params: ScoringParams, reference_
     if state.last_overtake_time is None:
         return 0.0
 
-    elapsed = (reference_time - state.last_overtake_time).total_seconds()
+    elapsed = max(0.0, (reference_time - state.last_overtake_time).total_seconds())
     if elapsed > params.overtake_decay_seconds:
         return 0.0
 
@@ -97,7 +99,7 @@ def score_pit_exit_traffic(state: DriverState, params: ScoringParams, reference_
     if state.pit_exit_time is None:
         return 0.0
 
-    elapsed = (reference_time - state.pit_exit_time).total_seconds()
+    elapsed = max(0.0, (reference_time - state.pit_exit_time).total_seconds())
     if elapsed > params.pit_exit_window_seconds:
         return 0.0
 
@@ -169,7 +171,7 @@ def score_stale_battle_penalty(
     if state.battle_duration_seconds < 30.0:
         return 0.0
     if state.last_overtake_time is not None:
-        elapsed_since_ot = (reference_time - state.last_overtake_time).total_seconds()
+        elapsed_since_ot = max(0.0, (reference_time - state.last_overtake_time).total_seconds())
         if elapsed_since_ot < params.overtake_decay_seconds:
             return 0.0
     duration = state.battle_duration_seconds
@@ -200,7 +202,7 @@ def score_anti_churn_penalty(
     if removal_time is None:
         return 0.0
 
-    elapsed = (reference_time - removal_time).total_seconds()
+    elapsed = max(0.0, (reference_time - removal_time).total_seconds())
     if elapsed > cooldown_seconds:
         return 0.0
 
@@ -225,7 +227,7 @@ def score_on_screen_retention(
     elif state.interval_behind is not None and state.interval_behind < 2.0:
         base_interest = 0.6
     elif state.last_overtake_time is not None:
-        elapsed = (reference_time - state.last_overtake_time).total_seconds()
+        elapsed = max(0.0, (reference_time - state.last_overtake_time).total_seconds())
         if elapsed < params.overtake_decay_seconds:
             base_interest = 0.7
 
@@ -288,7 +290,7 @@ def score_incident_recovery(state: DriverState, params: ScoringParams, reference
     if state.recent_incident_time is None:
         return 0.0
 
-    elapsed = (reference_time - state.recent_incident_time).total_seconds()
+    elapsed = max(0.0, (reference_time - state.recent_incident_time).total_seconds())
     if elapsed > params.incident_recovery_window_sec:
         return 0.0
 
@@ -308,13 +310,15 @@ def score_screen_time_penalty(
     """Penalty for drivers who have been on screen a long time (applied with negative weight).
     Encourages variety by reducing score for drivers we've been showing.
     """
+    if reference_time.tzinfo is None:
+        reference_time = reference_time.replace(tzinfo=UTC)
     time_on_screen_sec = 0.0
     for w in current_windows:
         if w.current_driver_number == state.driver_number and w.assigned_at:
             at = w.assigned_at
             if at.tzinfo is None:
                 at = at.replace(tzinfo=UTC)
-            elapsed = (reference_time - at).total_seconds()
+            elapsed = max(0.0, (reference_time - at).total_seconds())
             time_on_screen_sec = max(time_on_screen_sec, elapsed)
     if time_on_screen_sec <= 0:
         return 0.0

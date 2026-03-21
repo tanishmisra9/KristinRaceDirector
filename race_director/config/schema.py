@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class OpenF1Config(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     base_url: str = "https://api.openf1.org/v1"
     username: str = ""
     password: str = ""
@@ -14,6 +16,7 @@ class OpenF1Config(BaseModel):
 
 
 class MultiViewerConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     uri: str = "http://localhost:10101/api/graphql"
     player_ids: list[int] = Field(default_factory=list)
     num_windows: int | None = None
@@ -21,6 +24,7 @@ class MultiViewerConfig(BaseModel):
 
 
 class ScoringWeights(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     interval_ahead: float = 1.0
     interval_behind: float = 0.7
     closing_trend: float = 0.8
@@ -42,6 +46,7 @@ class ScoringWeights(BaseModel):
 
 
 class ScoringParams(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     interval_sigmoid_midpoint_sec: float = 1.5
     interval_sigmoid_steepness: float = 3.0
     trend_window_samples: int = 8
@@ -56,6 +61,7 @@ class ScoringParams(BaseModel):
 
 
 class HysteresisConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     min_dwell_seconds: float = 12.0
     swap_improvement_threshold: float = 0.15
     max_switches_per_cycle: int = 1
@@ -65,11 +71,13 @@ class HysteresisConfig(BaseModel):
 
 
 class StickySlotConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     slot: int
     driver: str | None = None
 
 
 class OrchestratorConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     tick_interval_sec: float = 5.0
     dry_run: bool = False
     manual_override_file: str = "/tmp/race_director_pause"
@@ -77,12 +85,14 @@ class OrchestratorConfig(BaseModel):
 
 
 class LoggingConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     level: str = "INFO"
     format: str = "console"
     file: str | None = None
 
 
 class AppConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     openf1: OpenF1Config = Field(default_factory=OpenF1Config)
     multiviewer: MultiViewerConfig = Field(default_factory=MultiViewerConfig)
     scoring_weights: ScoringWeights = Field(default_factory=ScoringWeights)

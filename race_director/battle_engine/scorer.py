@@ -78,6 +78,8 @@ class BattleScorer:
                 continue
             if state.in_pit:
                 continue
+            if state.is_retired:
+                continue
             if (
                 state.interval_to_ahead is None
                 and state.position > 1

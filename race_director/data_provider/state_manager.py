@@ -79,6 +79,10 @@ class StateManager:
         """Return current SC phase: 'none', 'deployed', 'ending', 'green'."""
         return self._sc_phase
 
+    def reset_filters(self) -> None:
+        """Reset timestamp filters — called when session changes."""
+        self._last_processed_date.clear()
+
     def _filter_new_records(self, endpoint: str, records: list[dict]) -> list[dict]:
         """Filter records to only those newer than the last processed date.
 
@@ -134,6 +138,16 @@ class StateManager:
 
     def ingest_intervals(self, records: list[dict]) -> None:
         records = self._filter_new_records("intervals", records)
+        if len(records) > 1000:
+            latest_per_driver: dict[int, dict] = {}
+            for rec in records:
+                num = rec.get("driver_number")
+                date = rec.get("date", "")
+                if num is not None and (
+                    num not in latest_per_driver or date > latest_per_driver[num].get("date", "")
+                ):
+                    latest_per_driver[num] = rec
+            records = list(latest_per_driver.values())
         for rec in records:
             num = rec.get("driver_number")
             if num is None or num not in self._states:
@@ -473,6 +487,13 @@ class StateManager:
         for num, st in list(self._states.items()):
             if st.recent_incident_time and ref - st.recent_incident_time > incident_window:
                 st.recent_incident_time = None
+
+        stale_threshold = timedelta(seconds=120)
+        for num, st in self._states.items():
+            if st.last_updated and ref - st.last_updated > stale_threshold:
+                st.is_retired = True
+            else:
+                st.is_retired = False
 
         pit_timeout = timedelta(seconds=60)
         for num in list(self._in_pit):

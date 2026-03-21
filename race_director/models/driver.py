@@ -78,6 +78,7 @@ class DriverState(BaseModel):
 
     # Metadata
     last_updated: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    is_retired: bool = False
 
     # 2026 scoring additions
     grid_position: int = 0  # start position; 0 = unknown

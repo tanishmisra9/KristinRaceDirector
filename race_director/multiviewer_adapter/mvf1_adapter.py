@@ -31,6 +31,7 @@ class Mvf1Adapter:
         self._initialized: bool = False
         self._schema_discovered: bool = False
         self._failed_tlas: set[str] = set()
+        self._commentary_warning_shown: bool = False
 
     def _discover_mutations(self) -> None:
         """Log available GraphQL mutations for debugging."""
@@ -122,6 +123,10 @@ class Mvf1Adapter:
                     log.info("dead_slots_removed", slots=dead_slots)
                 for s in dead_slots:
                     del self._slot_assignments[s]
+                if not self._slot_assignments and current_player_ids:
+                    log.info("reinitializing_all_slots", reason="all_previous_slots_dead")
+                    sorted_players = sorted(players, key=lambda p: str(p.id))
+                    self._slot_assignments = {i: str(p.id) for i, p in enumerate(sorted_players)}
                 assigned_pids = set(self._slot_assignments.values())
                 unassigned_pids = current_player_ids - assigned_pids
                 used_slots = set(self._slot_assignments.keys())
@@ -264,6 +269,9 @@ class Mvf1Adapter:
             old_player_id = str(player.id)
 
             commentary = self._find_commentary_player(mv)
+            if commentary is None and not self._commentary_warning_shown:
+                display.show_no_commentary()
+                self._commentary_warning_shown = True
             target_time = None
             if commentary and hasattr(commentary, "state") and commentary.state:
                 target_time = commentary.state.get("interpolatedCurrentTime") or commentary.state.get("currentTime")
@@ -311,13 +319,15 @@ class Mvf1Adapter:
                             mv_restore = MultiViewerForF1()
                             mv_restore.player_create(old_tla_backup)
                             log.info("window_restored", old_tla=old_tla_backup)
+                            if slot_index in self._slot_assignments:
+                                del self._slot_assignments[slot_index]
                         except Exception as restore_err:
                             log.warning("window_restore_failed", error=str(restore_err))
                     return False
 
-            INITIAL_WAIT = 3.0
-            SYNC_ATTEMPTS = 3
-            RETRY_WAIT = 2.0
+            INITIAL_WAIT = 2.0
+            SYNC_ATTEMPTS = 2
+            RETRY_WAIT = 1.5
             SYNC_MIN_TIME = 30.0
 
             time.sleep(INITIAL_WAIT)

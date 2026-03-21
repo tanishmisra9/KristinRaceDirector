@@ -51,9 +51,15 @@ class OpenF1TokenManager:
         now = time.time()
         if self._token and self._expires_at > now:
             return self._token
-        token, expires_in = await fetch_token(self._username, self._password)
-        self._token = token
-        # Refresh before expiry (buffer to avoid race at boundary)
-        self._expires_at = time.time() + (expires_in - REFRESH_BUFFER_SEC)
-        log.info("openf1_token_obtained", expires_in=expires_in)
-        return self._token
+        try:
+            token, expires_in = await fetch_token(self._username, self._password)
+            self._token = token
+            self._expires_at = time.time() + (expires_in - REFRESH_BUFFER_SEC)
+            log.info("openf1_token_obtained", expires_in=expires_in)
+            return self._token
+        except Exception as e:
+            log.warning("openf1_token_refresh_failed", error=str(e))
+            if self._token:
+                log.info("using_stale_token")
+                return self._token
+            raise

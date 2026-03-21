@@ -98,6 +98,7 @@ class OpenF1RestProvider:
                     new_key = s.get("session_key")
                     if new_key != self._session_key:
                         self._grid_fetched = False
+                        self._state.reset_filters()
                     self._session_key = new_key
                     name = s.get("session_name", "")
                     stype = "Sprint" if "sprint" in name.lower() else "Race"
@@ -211,7 +212,10 @@ class OpenF1RestProvider:
             r.raise_for_status()
             data = r.json()
             if isinstance(data, list):
-                handler(data)
+                try:
+                    handler(data)
+                except Exception:
+                    log.warning("ingest_failed", endpoint=endpoint, exc_info=True)
         except httpx.HTTPError:
             pass
 

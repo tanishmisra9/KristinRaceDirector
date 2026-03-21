@@ -15,10 +15,13 @@ from race_director.orchestrator.loop import Orchestrator
 
 def setup_logging(level: str, fmt: str, log_file: str | None) -> None:
     import logging
+    from logging.handlers import RotatingFileHandler
 
     # Default: write structlog to file, keep stdout clean for display.py
     if log_file is None:
         log_file = "kristen.log"
+    if log_file == "kristen.log":
+        open(log_file, "w").close()
 
     processors: list = [
         structlog.contextvars.merge_contextvars,
@@ -46,7 +49,9 @@ def setup_logging(level: str, fmt: str, log_file: str | None) -> None:
     # so only display.py print() lines appear on the terminal
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
-    file_handler = logging.FileHandler(log_file, mode="a")
+    file_handler = RotatingFileHandler(
+        log_file, mode="a", maxBytes=10 * 1024 * 1024, backupCount=3
+    )
     file_handler.setLevel(numeric_level)
     root_logger.addHandler(file_handler)
     root_logger.setLevel(numeric_level)

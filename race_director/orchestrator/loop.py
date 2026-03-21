@@ -31,6 +31,7 @@ class Orchestrator:
         self._lights_out_seen: bool = False
         self._last_leader: int | None = None
         self._last_sc_phase: str = "none"
+        self._consecutive_no_windows: int = 0
         self._adapter = None
         if config.orchestrator.dry_run:
             from race_director.multiviewer_adapter.dry_run import DryRunAdapter
@@ -49,14 +50,28 @@ class Orchestrator:
             except NotImplementedError:
                 pass
         log.info("orchestrator_starting")
-        await self._provider.start()
+        for attempt in range(5):
+            try:
+                await self._provider.start()
+                break
+            except Exception as e:
+                display.show_connection_retry(attempt + 1, str(e))
+                await asyncio.sleep(5)
+        else:
+            display.show_connection_failed()
+            return
         if self._adapter and self._adapter.is_available():
             windows = self._adapter.get_current_windows()
             log.info("windows_detected", count=len(windows))
-            display.show_startup(len(windows))
-            session_tlas = self._provider.get_session_tlas()
-            if session_tlas:
-                display.show_driver_list(sorted(session_tlas))
+            if windows:
+                display.show_startup(len(windows))
+                session_tlas = self._provider.get_session_tlas()
+                if session_tlas:
+                    display.show_driver_list(sorted(session_tlas))
+            else:
+                display.show_no_windows()
+        else:
+            display.show_multiviewer_not_found()
         try:
             while not self._shutting_down:
                 await self._tick()
@@ -76,6 +91,8 @@ class Orchestrator:
             await self._provider.poll()
         except Exception:
             log.error("poll_failed", exc_info=True)
+            if self._tick_count % 6 == 0:
+                display.show_poll_error()
             return
         states = self._provider.get_driver_states()
         session = self._provider.get_session_info()
@@ -84,7 +101,11 @@ class Orchestrator:
             return
         windows = self._adapter.get_current_windows() if self._adapter else []
         if not windows:
+            self._consecutive_no_windows += 1
+            if self._consecutive_no_windows == 1 or self._consecutive_no_windows % 6 == 0:
+                display.show_no_windows()
             return
+        self._consecutive_no_windows = 0
         log.info(
             "tick_start",
             tick=self._tick_count,

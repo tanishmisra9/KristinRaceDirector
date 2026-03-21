@@ -92,3 +92,33 @@ def show_safety_car_ending() -> None:
 def show_racing_resumed() -> None:
     """Show green flag."""
     print(f"[{_ts()}]  Green flag - cameras active")
+
+
+def show_poll_error() -> None:
+    """Show connection/poll error."""
+    print(f"[{_ts()}]  Connection issue - retrying...")
+
+
+def show_connection_retry(attempt: int, error: str) -> None:
+    """Show connection retry attempt."""
+    print(f"[{_ts()}]  Connection failed (attempt {attempt}/5) - retrying in 5s...")
+
+
+def show_connection_failed() -> None:
+    """Show connection failure after retries."""
+    print(f"[{_ts()}]  Could not connect after 5 attempts. Check your internet and credentials.")
+
+
+def show_no_windows() -> None:
+    """Show no onboard windows detected."""
+    print(f"[{_ts()}]  No onboard windows detected. Open some in MultiViewer.")
+
+
+def show_multiviewer_not_found() -> None:
+    """Show MultiViewer not found."""
+    print(f"[{_ts()}]  MultiViewer not found. Make sure it's running.")
+
+
+def show_no_commentary() -> None:
+    """Show F1 LIVE player not found warning."""
+    print(f"[{_ts()}]  Warning: F1 LIVE player not found. Sync may be inaccurate.")
