@@ -53,6 +53,9 @@ class Orchestrator:
             windows = self._adapter.get_current_windows()
             log.info("windows_detected", count=len(windows))
             display.show_startup(len(windows))
+            session_tlas = self._provider.get_session_tlas()
+            if session_tlas:
+                display.show_driver_list(sorted(session_tlas))
         try:
             while not self._shutting_down:
                 await self._tick()
@@ -88,12 +91,21 @@ class Orchestrator:
             num_windows=len(windows),
         )
         ref_time = self._provider.get_reference_time()
+        failed = self._adapter.get_failed_tlas() if self._adapter else set()
+        session_tlas = self._provider.get_session_tlas()
+        # If we have a session driver list, exclude anyone not in it
+        excluded = failed
+        if session_tlas:
+            all_tlas = {st.tla.upper() for st in states.values()}
+            non_session = all_tlas - session_tlas
+            excluded = failed | non_session
         ranked = self._scorer.score_all(
             states,
             windows,
             session=session,
             cooldown_seconds=self._config.hysteresis.removal_cooldown_seconds,
             reference_time=ref_time,
+            excluded_tlas=excluded,
         )
         if not self._lights_out_seen:
             if self._provider.is_lights_out():
@@ -118,6 +130,21 @@ class Orchestrator:
                 self._config.orchestrator.startup_grace_ticks - self._tick_count,
             )
             on_screen = [w.current_tla for w in windows if w.current_tla]
+            log.info("tick_end", tick=self._tick_count, on_screen=on_screen, swaps_executed=0)
+            return
+        # Freeze swaps during Safety Car, VSC, or Red Flag
+        is_neutralized = False
+        for state in states.values():
+            if state.safety_car_active or state.vsc_active:
+                is_neutralized = True
+                break
+        if session and session.status in ("Inactive", "Ended"):
+            is_neutralized = True
+        if is_neutralized:
+            on_screen = [w.current_tla for w in windows if w.current_tla]
+            if self._tick_count % 6 == 0:
+                display.show_neutralized()
+                display.show_tick_status(self._tick_count, on_screen)
             log.info("tick_end", tick=self._tick_count, on_screen=on_screen, swaps_executed=0)
             return
         current_leader = None

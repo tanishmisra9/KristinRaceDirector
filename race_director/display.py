@@ -67,3 +67,18 @@ def show_lights_out() -> None:
 def show_waiting_for_start() -> None:
     """Show that we're waiting for the race to start."""
     print(f"[{_ts()}]  Waiting for lights out...")
+
+
+def show_stream_unavailable(tla: str) -> None:
+    """Show that a driver's stream is not available."""
+    print(f"[{_ts()}]  Stream unavailable: {tla} (skipping)")
+
+
+def show_driver_list(tlas: list[str]) -> None:
+    """Show confirmed driver list."""
+    print(f"[{_ts()}]  Drivers confirmed: {', '.join(tlas)} ({len(tlas)} drivers)")
+
+
+def show_neutralized() -> None:
+    """Show that swaps are paused due to neutralization."""
+    print(f"[{_ts()}]  Safety Car / VSC active - cameras frozen")

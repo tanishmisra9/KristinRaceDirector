@@ -64,6 +64,7 @@ class BattleScorer:
         session: SessionInfo | None = None,
         cooldown_seconds: float = 30.0,
         reference_time: datetime | None = None,
+        excluded_tlas: set[str] | None = None,
     ) -> list[ScoringResult]:
         """Score every driver, return results sorted by total_score descending."""
         ref_time = reference_time or datetime.now(UTC)
@@ -73,6 +74,8 @@ class BattleScorer:
         w = self._weights
         p = self._params
         for num, state in states.items():
+            if excluded_tlas and state.tla.upper() in excluded_tlas:
+                continue
             if state.in_pit:
                 continue
             if (

@@ -17,6 +17,7 @@ dev = ["pytest>=7.0", "ruff>=0.1"]
 
 [project.scripts]
 race-director = "race_director.__main__:main"
+kristen = "race_director.__main__:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -102,6 +102,10 @@ class StateManager:
     def get_driver_states(self) -> dict[int, DriverState]:
         return dict(self._states)
 
+    def get_session_tlas(self) -> set[str]:
+        """Return TLAs of drivers confirmed in this session."""
+        return {info.name_acronym.upper() for info in self._drivers.values() if info.name_acronym}
+
     def ingest_drivers(self, records: list[dict]) -> None:
         for rec in records:
             num = rec.get("driver_number")

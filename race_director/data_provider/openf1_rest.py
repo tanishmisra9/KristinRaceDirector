@@ -229,3 +229,6 @@ class OpenF1RestProvider:
 
     def is_live(self) -> bool:
         return True
+
+    def get_session_tlas(self) -> set[str]:
+        return self._state.get_session_tlas()

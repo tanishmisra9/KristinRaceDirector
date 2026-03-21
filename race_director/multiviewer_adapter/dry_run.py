@@ -54,3 +54,6 @@ class DryRunAdapter:
             log.info("dry_run_swap", slot=slot_index, old=old, new=new_tla)
             return True
         return False
+
+    def get_failed_tlas(self) -> set[str]:
+        return set()

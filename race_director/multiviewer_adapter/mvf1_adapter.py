@@ -30,6 +30,7 @@ class Mvf1Adapter:
         self._slot_state: dict[int, WindowSlot] = {}  # slot_index -> WindowSlot for assigned_at
         self._initialized: bool = False
         self._schema_discovered: bool = False
+        self._failed_tlas: set[str] = set()
 
     def _discover_mutations(self) -> None:
         """Log available GraphQL mutations for debugging."""
@@ -230,6 +231,9 @@ class Mvf1Adapter:
             return False
 
     def switch_window(self, slot_index: int, new_tla: str, player_id: int | None = None) -> bool:
+        if new_tla.upper() in self._failed_tlas:
+            log.debug("skipping_blacklisted_tla", tla=new_tla)
+            return False
         try:
             from mvf1 import MultiViewerForF1
             mv = MultiViewerForF1()
@@ -268,6 +272,11 @@ class Mvf1Adapter:
                 target_time = None
 
             old_ids = {str(p.id) for p in players}
+            old_tla_backup = ""
+            if player.driver_data:
+                old_tla_backup = player.driver_data.get("tla", "") or getattr(player, "title", "")
+            if not old_tla_backup:
+                old_tla_backup = getattr(player, "title", "")
             try:
                 player.switch_stream(new_tla)
             except Exception as e:
@@ -294,7 +303,17 @@ class Mvf1Adapter:
                         log.warning("manual_create_failed", error=str(e2))
                         return False
                 else:
-                    raise
+                    log.warning("switch_stream_failed", tla=new_tla, error=error_msg)
+                    self._failed_tlas.add(new_tla.upper())
+                    display.show_stream_unavailable(new_tla)
+                    if old_tla_backup:
+                        try:
+                            mv_restore = MultiViewerForF1()
+                            mv_restore.player_create(old_tla_backup)
+                            log.info("window_restored", old_tla=old_tla_backup)
+                        except Exception as restore_err:
+                            log.warning("window_restore_failed", error=str(restore_err))
+                    return False
 
             INITIAL_WAIT = 3.0
             SYNC_ATTEMPTS = 3
@@ -410,3 +429,6 @@ class Mvf1Adapter:
         except Exception as e:
             log.warning("mvf1_switch_failed", slot=slot_index, tla=new_tla, error=str(e))
         return False
+
+    def get_failed_tlas(self) -> set[str]:
+        return set(self._failed_tlas)
