@@ -1,4 +1,4 @@
-# KristenRaceDirector - Example configuration
+# KristinRaceDirector - Example configuration
 # Copy to config.yaml and customize.
 # For OpenF1 live data: set OPENF1_USERNAME and OPENF1_PASSWORD env vars,
 # or use config.local.yaml (gitignored) with your credentials.

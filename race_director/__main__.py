@@ -19,8 +19,8 @@ def setup_logging(level: str, fmt: str, log_file: str | None) -> None:
 
     # Default: write structlog to file, keep stdout clean for display.py
     if log_file is None:
-        log_file = "kristen.log"
-    if log_file == "kristen.log":
+        log_file = "kristin.log"
+    if log_file == "kristin.log":
         open(log_file, "w").close()
 
     processors: list = [
@@ -62,7 +62,7 @@ def main() -> None:
     BANNER = """
 ╔══════════════════════════════════════════════════════╗
 ║                                                      ║
-║            KRISTEN RACE DIRECTOR                     ║
+║            KRISTIN RACE DIRECTOR                     ║
 ║       MultiViewer Onboard Camera Automation          ║
 ║                                                      ║
 ║               Formula 1 @ Purdue                     ║
@@ -71,7 +71,7 @@ def main() -> None:
 """
     print(BANNER, flush=True)
     parser = argparse.ArgumentParser(
-        prog="kristen",
+        prog="kristin",
         description="MultiViewer for F1 camera automation",
     )
     parser.add_argument("-c", "--config", default=None, help="Config file path")
