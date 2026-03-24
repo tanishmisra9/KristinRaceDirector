@@ -194,8 +194,11 @@ class StateManager:
             records = list(latest_per_driver.values())
         for rec in records:
             num = rec.get("driver_number")
-            if num is None or num not in self._states:
+            if num is None:
                 continue
+            # Issue D: Auto-create DriverState for unknown drivers (mirrors ingest_positions)
+            if num not in self._states:
+                self._states[num] = DriverState(driver_number=num, tla=str(num))
 
             interval_raw = rec.get("interval")
             gap_raw = rec.get("gap_to_leader")

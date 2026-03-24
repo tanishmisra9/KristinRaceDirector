@@ -78,15 +78,16 @@ class OpenF1RestProvider:
 
     async def poll(self) -> None:
         self._poll_count += 1
+        
+        # Fix #12: Ensure client exists before any fetches (session, grid, endpoints)
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self._config.openf1.request_timeout_sec)
+        
         await self._fetch_session()
         if not self._session_key:
             return
         headers = await self._auth_headers()
         await self._fetch_starting_grid(headers)
-        
-        # Fix #12: Use persistent client, recreate if closed
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self._config.openf1.request_timeout_sec)
         
         for endpoint, handler_name in ENDPOINTS:
             handler = getattr(self._state, handler_name, None)
@@ -111,110 +112,108 @@ class OpenF1RestProvider:
         else:
             params["session_name"] = "Race"
         headers = await self._auth_headers()
-        async with httpx.AsyncClient(timeout=cfg.request_timeout_sec) as c:
-            try:
-                r = await c.get(url, params=params, headers=headers)
-                if r.status_code == 401:
-                    log.warning("openf1_unauthorized_live_data_requires_subscription")
-                    return
-                r.raise_for_status()
-                data = r.json()
-                if isinstance(data, list) and data:
-                    s = data[0]
-                    new_key = s.get("session_key")
-                    if new_key != self._session_key:
-                        self._grid_fetched = False
-                        # Fix #2: Full state reset on session change, not just filters
-                        self._state.reset()
-                        # Also reset endpoint health tracking for new session
-                        self._consecutive_failures.clear()
-                        self._last_success.clear()
-                        self._data_stale = False
-                    self._session_key = new_key
-                    name = s.get("session_name", "")
-                    stype = "Sprint" if "sprint" in name.lower() else "Race"
-                    if "qualifying" in name.lower():
-                        stype = "Qualifying"
-                    self._state.set_session(
-                        SessionInfo(
-                            session_key=s.get("session_key", 0),
-                            session_name=name,
-                            session_type=stype,
-                        )
+        # Issue B: Use shared client (guaranteed by poll() or start())
+        if self._client is None:
+            return
+        try:
+            r = await self._client.get(url, params=params, headers=headers)
+            if r.status_code == 401:
+                log.warning("openf1_unauthorized_live_data_requires_subscription")
+                return
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, list) and data:
+                s = data[0]
+                new_key = s.get("session_key")
+                if new_key != self._session_key:
+                    self._grid_fetched = False
+                    # Fix #2: Full state reset on session change, not just filters
+                    self._state.reset()
+                    # Also reset endpoint health tracking for new session
+                    self._consecutive_failures.clear()
+                    self._last_success.clear()
+                    self._data_stale = False
+                self._session_key = new_key
+                name = s.get("session_name", "")
+                stype = "Sprint" if "sprint" in name.lower() else "Race"
+                if "qualifying" in name.lower():
+                    stype = "Qualifying"
+                self._state.set_session(
+                    SessionInfo(
+                        session_key=s.get("session_key", 0),
+                        session_name=name,
+                        session_type=stype,
                     )
-                    self._state.set_session_type(stype)
-            except httpx.HTTPError as e:
-                log.debug("session_fetch_failed", error=str(e))
+                )
+                self._state.set_session_type(stype)
+        except httpx.HTTPError as e:
+            log.debug("session_fetch_failed", error=str(e))
 
     async def _fetch_starting_grid(self, headers: dict[str, str]) -> None:
         """Fetch starting grid once per session."""
-        if self._grid_fetched or not self._session_key:
+        if self._grid_fetched or not self._session_key or self._client is None:
             return
         url = f"{self._config.openf1.base_url}/starting_grid"
         try:
-            async with httpx.AsyncClient(
-                timeout=self._config.openf1.request_timeout_sec
-            ) as c:
-                r = await c.get(
-                    url,
-                    params={"session_key": self._session_key},
-                    headers=headers,
-                )
-                if r.status_code == 401:
-                    return
-                r.raise_for_status()
-                data = r.json()
-                if isinstance(data, list) and data:
-                    grid: dict[int, int] = {}
-                    for rec in data:
-                        num = rec.get("driver_number")
-                        pos = rec.get("position")
-                        if num is not None and pos is not None:
-                            grid[int(num)] = int(pos)
-                    if grid:
-                        self._state.set_grid_positions(grid)
-                        self._grid_fetched = True
-                        log.info(
-                            "starting_grid_loaded",
-                            count=len(grid),
-                            sample=dict(list(grid.items())[:5]),
-                        )
+            # Issue B: Use shared client instead of creating a new one
+            r = await self._client.get(
+                url,
+                params={"session_key": self._session_key},
+                headers=headers,
+            )
+            if r.status_code == 401:
+                return
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, list) and data:
+                grid: dict[int, int] = {}
+                for rec in data:
+                    num = rec.get("driver_number")
+                    pos = rec.get("position")
+                    if num is not None and pos is not None:
+                        grid[int(num)] = int(pos)
+                if grid:
+                    self._state.set_grid_positions(grid)
+                    self._grid_fetched = True
+                    log.info(
+                        "starting_grid_loaded",
+                        count=len(grid),
+                        sample=dict(list(grid.items())[:5]),
+                    )
         except httpx.HTTPError as e:
             log.debug("starting_grid_fetch_failed", error=str(e))
 
         if not self._grid_fetched and self._session_key:
             url = f"{self._config.openf1.base_url}/position"
             try:
-                async with httpx.AsyncClient(
-                    timeout=self._config.openf1.request_timeout_sec
-                ) as c:
-                    r = await c.get(
-                        url,
-                        params={"session_key": self._session_key},
-                        headers=headers,
-                    )
-                    r.raise_for_status()
-                    data = r.json()
-                    if isinstance(data, list) and data:
-                        earliest: dict[int, tuple[str, int]] = {}
-                        for rec in data:
-                            num = rec.get("driver_number")
-                            pos = rec.get("position")
-                            date_str = rec.get("date", "")
-                            if num is not None and pos is not None:
-                                date_key = (
-                                    date_str if date_str else "9999-12-31T23:59:59"
-                                )
-                                if (
-                                    num not in earliest
-                                    or date_key < earliest[num][0]
-                                ):
-                                    earliest[num] = (date_key, int(pos))
-                        grid = {num: pos for num, (_, pos) in earliest.items()}
-                        if grid:
-                            self._state.set_grid_positions(grid)
-                            self._grid_fetched = True
-                            log.info("grid_from_positions", count=len(grid))
+                # Issue B: Use shared client for fallback grid fetch
+                r = await self._client.get(
+                    url,
+                    params={"session_key": self._session_key},
+                    headers=headers,
+                )
+                r.raise_for_status()
+                data = r.json()
+                if isinstance(data, list) and data:
+                    earliest: dict[int, tuple[str, int]] = {}
+                    for rec in data:
+                        num = rec.get("driver_number")
+                        pos = rec.get("position")
+                        date_str = rec.get("date", "")
+                        if num is not None and pos is not None:
+                            date_key = (
+                                date_str if date_str else "9999-12-31T23:59:59"
+                            )
+                            if (
+                                num not in earliest
+                                or date_key < earliest[num][0]
+                            ):
+                                earliest[num] = (date_key, int(pos))
+                    grid = {num: pos for num, (_, pos) in earliest.items()}
+                    if grid:
+                        self._state.set_grid_positions(grid)
+                        self._grid_fetched = True
+                        log.info("grid_from_positions", count=len(grid))
             except httpx.HTTPError:
                 pass
 

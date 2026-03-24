@@ -154,6 +154,8 @@ async def main_loop(
     last_dates: dict[str, str] = {}
     
     # Fix #16: Token refresh tracking
+    # IMPORTANT: fetch_endpoint must always use current_headers (not the original headers)
+    # so that token refreshes are applied to subsequent requests
     current_headers = dict(headers)
     token_time = token_obtained_at
     token_expires = expires_in

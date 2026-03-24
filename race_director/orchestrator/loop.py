@@ -338,8 +338,8 @@ class Orchestrator:
                 windows[swap.slot_index].assigned_at = ref_time
                 self._hysteresis.record_swaps(1)
                 swaps_executed += 1
-                # Fix #25: Track last swap time for heartbeat
-                self._last_swap_at = datetime.now(UTC)
+                # Fix #25: Track last swap time for heartbeat (use ref_time for consistency)
+                self._last_swap_at = ref_time
             else:
                 log.warning(
                     "swap_failed",
