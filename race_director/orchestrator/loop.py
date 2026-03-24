@@ -200,8 +200,6 @@ class Orchestrator:
             if state.safety_car_active or state.vsc_active:
                 is_neutralized = True
                 break
-        if session and session.status in ("Inactive", "Ended"):
-            is_neutralized = True
 
         # Check SC phase for display notifications
         sc_phase = self._provider.get_sc_phase()

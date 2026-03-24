@@ -12,9 +12,6 @@ class DriverInfo(BaseModel):
 
     driver_number: int
     name_acronym: str  # 3-letter TLA, e.g. "VER"
-    full_name: str = ""
-    team_name: str = ""
-    team_colour: str = ""
 
 
 class LocationSample(BaseModel):
@@ -30,7 +27,6 @@ class IntervalSample(BaseModel):
     """A single interval measurement with timestamp."""
 
     interval: float | None = None  # seconds to car ahead; None for leader
-    gap_to_leader: float | None = None
     date: datetime
 
 
@@ -39,12 +35,10 @@ class DriverState(BaseModel):
 
     driver_number: int
     tla: str = ""
-    team_name: str = ""
 
     # Position & intervals
     position: int = 0
     interval_to_ahead: float | None = None
-    gap_to_leader: float | None = None
     interval_behind: float | None = None  # derived: next car's interval
     is_lapped: bool = False
 
@@ -58,7 +52,6 @@ class DriverState(BaseModel):
     # Pit status
     in_pit: bool = False
     pit_exit_time: datetime | None = None
-    last_pit_lap: int | None = None
 
     # DRS (pre-2026) / Overtake Mode (2026+)
     drs_open: bool = False

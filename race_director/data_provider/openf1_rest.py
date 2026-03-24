@@ -138,14 +138,7 @@ class OpenF1RestProvider:
                 stype = "Sprint" if "sprint" in name.lower() else "Race"
                 if "qualifying" in name.lower():
                     stype = "Qualifying"
-                self._state.set_session(
-                    SessionInfo(
-                        session_key=s.get("session_key", 0),
-                        session_name=name,
-                        session_type=stype,
-                    )
-                )
-                self._state.set_session_type(stype)
+                self._state.set_session(SessionInfo(session_type=stype))
         except httpx.HTTPError as e:
             log.debug("session_fetch_failed", error=str(e))
 
@@ -295,9 +288,6 @@ class OpenF1RestProvider:
 
     def get_session_info(self):
         return self._state.get_session_info()
-
-    def is_live(self) -> bool:
-        return True
 
     def get_session_tlas(self) -> set[str]:
         return self._state.get_session_tlas()

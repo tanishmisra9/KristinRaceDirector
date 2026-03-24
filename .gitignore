@@ -39,3 +39,6 @@ ENV/
 *.log
 kristin.log
 race_director.log
+
+# Data capture output
+capture_*.json

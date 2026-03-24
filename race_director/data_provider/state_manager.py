@@ -14,11 +14,12 @@ from race_director.models.driver import (
     IntervalSample,
     LocationSample,
 )
-from race_director.models.session import SessionInfo, SessionStatus
+from race_director.models.session import SessionInfo
 
 log = structlog.get_logger()
 
 INCIDENT_KEYWORDS = ("spin", "contact", "collision", "off", "stranded", "stopped")
+_SESSION_STATUS_LABELS = ("Unknown", "Inactive", "Active", "Started", "Ended")
 
 
 class StateManager:
@@ -40,8 +41,6 @@ class StateManager:
         self._vsc = False
         self._session_status = "Unknown"
         self._lap_number = 0
-        self._restart_lap = False
-        self._sc_ended_recently = False
 
         # Recent race control events per driver
         self._driver_flags: dict[int, tuple[str, datetime]] = {}
@@ -50,9 +49,7 @@ class StateManager:
         self._recent_overtakes: dict[int, tuple[datetime, bool]] = {}
 
         # Pit events
-        self._pit_exits: dict[int, datetime] = {}
         self._in_pit: set[int] = set()
-        self._in_pit_since: dict[int, datetime] = {}
 
         # Battle duration: consecutive samples with small gap
         self._battle_start: dict[int, datetime] = {}
@@ -84,10 +81,6 @@ class StateManager:
         """Return current SC phase: 'none', 'deployed', 'ending', 'green'."""
         return self._sc_phase
 
-    def reset_filters(self) -> None:
-        """Reset timestamp filters — called when session changes."""
-        self._last_processed_date.clear()
-
     def reset(self) -> None:
         """Full reset of all per-driver state — called on session change (Fix #2)."""
         self._drivers.clear()
@@ -96,9 +89,7 @@ class StateManager:
         self._interval_behind_history.clear()
         self._battle_start.clear()
         self._recent_overtakes.clear()
-        self._pit_exits.clear()
         self._in_pit.clear()
-        self._in_pit_since.clear()
         self._driver_flags.clear()
         self._first_ingest_done.clear()
         self._last_processed_date.clear()
@@ -109,8 +100,6 @@ class StateManager:
         self._sc_phase = "none"
         self._session_status = "Unknown"
         self._lap_number = 0
-        self._restart_lap = False
-        self._sc_ended_recently = False
         log.info("state_manager_reset")
 
     def _parse_date(self, date_str: str) -> datetime:
@@ -168,15 +157,11 @@ class StateManager:
             self._drivers[num] = DriverInfo(
                 driver_number=num,
                 name_acronym=rec.get("name_acronym", ""),
-                full_name=rec.get("full_name", ""),
-                team_name=rec.get("team_name", ""),
-                team_colour=rec.get("team_colour", ""),
             )
             if num not in self._states:
                 self._states[num] = DriverState(
                     driver_number=num,
                     tla=rec.get("name_acronym", ""),
-                    team_name=rec.get("team_name", ""),
                 )
 
     def ingest_intervals(self, records: list[dict]) -> None:
@@ -201,7 +186,6 @@ class StateManager:
                 self._states[num] = DriverState(driver_number=num, tla=str(num))
 
             interval_raw = rec.get("interval")
-            gap_raw = rec.get("gap_to_leader")
             date_str = rec.get("date", "")
 
             date = self._parse_date(date_str)
@@ -215,13 +199,8 @@ class StateManager:
             elif isinstance(interval_raw, str) and "LAP" in interval_raw:
                 is_lapped = True
 
-            gap_val: float | None = None
-            if isinstance(gap_raw, (int, float)):
-                gap_val = float(gap_raw)
-
             state = self._states[num]
             state.interval_to_ahead = interval_val
-            state.gap_to_leader = gap_val
             state.is_lapped = is_lapped
             state.last_updated = date
 
@@ -230,7 +209,7 @@ class StateManager:
                     maxlen=self._params.trend_window_samples
                 )
             self._interval_history[num].append(
-                IntervalSample(interval=interval_val, gap_to_leader=gap_val, date=date)
+                IntervalSample(interval=interval_val, date=date)
             )
 
             state.interval_trend = self._compute_trend(num)
@@ -246,7 +225,7 @@ class StateManager:
                 )
             if state.interval_behind is not None:
                 self._interval_behind_history[num].append(
-                    IntervalSample(interval=state.interval_behind, gap_to_leader=None, date=self._latest_data_time)
+                    IntervalSample(interval=state.interval_behind, date=self._latest_data_time)
                 )
             state.interval_behind_trend = self._compute_behind_trend(num)
 
@@ -410,10 +389,6 @@ class StateManager:
         if self._session:
             self._session.lap_number = lap
 
-    def set_session_type(self, session_type: str) -> None:
-        if self._session:
-            self._session.session_type = session_type
-
     def ingest_locations(self, records: list[dict]) -> None:
         for rec in records:
             num = rec.get("driver_number")
@@ -480,10 +455,8 @@ class StateManager:
                 self._latest_data_time = date
 
             self._states[num].pit_exit_time = date
-            self._states[num].last_pit_lap = rec.get("lap_number")
             self._states[num].in_pit = False
             self._in_pit.discard(num)
-            self._in_pit_since.pop(num, None)
 
     def ingest_race_control(self, records: list[dict]) -> None:
         records = self._filter_new_records("race_control", records)
@@ -500,7 +473,6 @@ class StateManager:
 
             if category == "SafetyCar":
                 if "ending" in message or "in this lap" in message:
-                    self._sc_ended_recently = True
                     self._sc_phase = "ending"
                 elif "virtual safety car" in message or "vsc" in message:
                     self._vsc = True
@@ -517,21 +489,19 @@ class StateManager:
             if category == "SessionStatus":
                 if "started" in message:
                     self._lights_out = True
-                for status_val in SessionStatus:
-                    if status_val.value.lower() in message:
-                        self._session_status = status_val.value
+                for status_val in _SESSION_STATUS_LABELS:
+                    if status_val.lower() in message:
+                        self._session_status = status_val
                         break
 
             # Detect green flag / track clear - clears SC and VSC state
             if flag == "GREEN" and "track clear" in message:
                 self._safety_car = False
                 self._vsc = False
-                self._sc_ended_recently = False
                 self._sc_phase = "green"
             if "overtake enabled" in message:
                 self._safety_car = False
                 self._vsc = False
-                self._sc_ended_recently = False
                 self._sc_phase = "green"
 
             if driver_num and driver_num in self._states and flag:
@@ -603,11 +573,3 @@ class StateManager:
                 st.is_retired = True
             else:
                 st.is_retired = False
-
-        pit_timeout = timedelta(seconds=60)
-        for num in list(self._in_pit):
-            if num in self._states and num in self._in_pit_since:
-                if ref - self._in_pit_since[num] > pit_timeout:
-                    self._states[num].in_pit = False
-                    self._in_pit.discard(num)
-                    del self._in_pit_since[num]

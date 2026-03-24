@@ -8,7 +8,6 @@ openf1:
 multiviewer:
   uri: "http://localhost:10101/api/graphql"
   player_ids: []
-  sync_delay_sec: 1.2
   # num_windows: auto-detects from open player windows. Set explicitly to override.
 
 scoring_weights:
@@ -47,6 +46,7 @@ scoring_params:
 hysteresis:
   min_dwell_seconds: 12
   swap_improvement_threshold: 0.15
+  swap_improvement_ratio: 0.15
   max_switches_per_cycle: 1
   max_switches_per_minute: 6
   removal_cooldown_seconds: 25
@@ -63,6 +63,7 @@ orchestrator:
   dry_run: false
   manual_override_file: "/tmp/race_director_pause"
   startup_grace_ticks: 1
+  watchdog_timeout_sec: 60.0
 
 logging:
   level: "INFO"

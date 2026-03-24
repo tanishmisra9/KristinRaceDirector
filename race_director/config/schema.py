@@ -20,7 +20,6 @@ class MultiViewerConfig(BaseModel):
     uri: str = "http://localhost:10101/api/graphql"
     player_ids: list[int] = Field(default_factory=list)
     num_windows: int | None = None
-    sync_delay_sec: float = 1.2
 
 
 class ScoringWeights(BaseModel):
@@ -84,8 +83,6 @@ class OrchestratorConfig(BaseModel):
     dry_run: bool = False
     manual_override_file: str = "/tmp/race_director_pause"
     startup_grace_ticks: int = 1
-    # Fix #25: Health monitoring
-    health_port: int | None = None  # Optional HTTP health endpoint port
     watchdog_timeout_sec: float = 60.0  # Log CRITICAL if tick takes longer
 
 
