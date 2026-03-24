@@ -15,6 +15,7 @@ from race_director import display
 from race_director.battle_engine.scorer import BattleScorer
 from race_director.config.schema import AppConfig
 from race_director.data_provider.openf1_rest import OpenF1RestProvider
+from race_director.data_provider.test_recorder import TestRecorder
 from race_director.orchestrator.hysteresis import HysteresisEngine
 
 log = structlog.get_logger()
@@ -40,6 +41,8 @@ class Orchestrator:
         # Fix #25: Watchdog tracking
         self._last_tick_completed_at: float = time.monotonic()
         self._last_swap_at: datetime | None = None
+        # Fix #26: Track TLAs that recently failed swaps to avoid retrying immediately
+        self._swap_cooldown: dict[str, int] = {}  # tla -> tick when cooldown expires
         self._adapter = None
         if config.orchestrator.dry_run:
             from race_director.multiviewer_adapter.dry_run import DryRunAdapter
@@ -47,6 +50,9 @@ class Orchestrator:
         else:
             from race_director.multiviewer_adapter.mvf1_adapter import Mvf1Adapter
             self._adapter = Mvf1Adapter(config.multiviewer, config.sticky_slots)
+        self._recorder: TestRecorder | None = None
+        if config.orchestrator.test_mode:
+            self._recorder = TestRecorder(Path(config.orchestrator.test_data_dir))
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
@@ -100,6 +106,9 @@ class Orchestrator:
         except asyncio.CancelledError:
             pass
         finally:
+            display.close_test_log()
+            if self._recorder:
+                self._recorder.close()
             await self._provider.stop()
             log.info("orchestrator_stopped")
 
@@ -128,6 +137,17 @@ class Orchestrator:
             if self._tick_count % 6 == 0:
                 display.show_poll_error()
             return
+
+        if self._config.orchestrator.test_mode and self._recorder:
+            meta = self._provider.get_session_meta()
+            if meta:
+                self._recorder.init_session(meta)
+            elif not self._recorder.is_initialized:
+                self._recorder.init_session({})
+            if self._recorder.session_dir:
+                display.set_test_log(self._recorder.session_dir / "terminal_output.log")
+            api_data = self._provider.get_tick_api_data()
+            self._recorder.record_api_tick(self._tick_count, api_data)
         
         # Fix #4: Skip scoring/swaps if data is stale
         if not self._provider.is_data_fresh():
@@ -155,12 +175,19 @@ class Orchestrator:
         ref_time = self._provider.get_reference_time()
         failed = self._adapter.get_failed_tlas() if self._adapter else set()
         session_tlas = self._provider.get_session_tlas()
+        
+        # Fix #26: Clean expired cooldowns and exclude cooled-down TLAs
+        expired = [tla for tla, expire_tick in self._swap_cooldown.items() if self._tick_count >= expire_tick]
+        for tla in expired:
+            del self._swap_cooldown[tla]
+        cooled_down = set(self._swap_cooldown.keys())
+        
         # If we have a session driver list, exclude anyone not in it
-        excluded = failed
+        excluded = failed | cooled_down
         if session_tlas:
             all_tlas = {st.tla.upper() for st in states.values()}
             non_session = all_tlas - session_tlas
-            excluded = failed | non_session
+            excluded = failed | cooled_down | non_session
         ranked = self._scorer.score_all(
             states,
             windows,
@@ -169,18 +196,35 @@ class Orchestrator:
             reference_time=ref_time,
             excluded_tlas=excluded,
         )
+        if self._recorder:
+            self._recorder.record_scoring(self._tick_count, ranked, windows)
         if not self._lights_out_seen:
             if self._provider.is_lights_out():
+                if self._recorder:
+                    self._recorder.record_event(self._tick_count, "lights_out", {})
                 self._lights_out_seen = True
                 self._tick_count = 0  # Reset tick counter — grace period starts now
                 display.show_lights_out()
             else:
-                # Still waiting for lights out — don't process swaps yet
-                on_screen = [w.current_tla for w in windows if w.current_tla]
-                if self._tick_count % 6 == 0:
-                    display.show_waiting_for_start()
-                log.info("tick_end", tick=self._tick_count, on_screen=on_screen, swaps_executed=0)
-                return
+                # Fix #27: Infer lights out from data in replay mode
+                # If after 5 ticks we have valid position data but no SESSION STARTED event,
+                # the race is already running and we should start managing cameras
+                if self._tick_count > 5 and any(st.position > 0 for st in states.values()):
+                    if self._recorder:
+                        self._recorder.record_event(
+                            self._tick_count, "lights_out_inferred", {}
+                        )
+                    self._lights_out_seen = True
+                    self._tick_count = 0
+                    log.info("lights_out_inferred_from_data")
+                    display.show_lights_out()
+                else:
+                    # Still waiting for lights out — don't process swaps yet
+                    on_screen = [w.current_tla for w in windows if w.current_tla]
+                    if self._tick_count % 6 == 0:
+                        display.show_waiting_for_start()
+                    log.info("tick_end", tick=self._tick_count, on_screen=on_screen, swaps_executed=0)
+                    return
         if self._tick_count <= self._config.orchestrator.startup_grace_ticks:
             log.info(
                 "startup_grace_period",
@@ -191,6 +235,15 @@ class Orchestrator:
                 self._tick_count,
                 self._config.orchestrator.startup_grace_ticks - self._tick_count,
             )
+            if self._recorder:
+                self._recorder.record_event(
+                    self._tick_count,
+                    "grace_period",
+                    {
+                        "remaining_ticks": self._config.orchestrator.startup_grace_ticks
+                        - self._tick_count,
+                    },
+                )
             on_screen = [w.current_tla for w in windows if w.current_tla]
             log.info("tick_end", tick=self._tick_count, on_screen=on_screen, swaps_executed=0)
             return
@@ -206,10 +259,22 @@ class Orchestrator:
         if sc_phase != self._last_sc_phase:
             if sc_phase == "deployed":
                 display.show_safety_car_deployed()
+                if self._recorder:
+                    self._recorder.record_event(
+                        self._tick_count, "safety_car", {"phase": "deployed"}
+                    )
             elif sc_phase == "ending":
                 display.show_safety_car_ending()
+                if self._recorder:
+                    self._recorder.record_event(
+                        self._tick_count, "safety_car", {"phase": "ending"}
+                    )
             elif sc_phase == "green" and self._last_sc_phase in ("deployed", "ending"):
                 display.show_racing_resumed()
+                if self._recorder:
+                    self._recorder.record_event(
+                        self._tick_count, "safety_car", {"phase": "green"}
+                    )
             self._last_sc_phase = sc_phase
 
         if is_neutralized:
@@ -255,18 +320,43 @@ class Orchestrator:
                                 states[self._last_leader].tla if self._last_leader in states else None,
                                 leader_tla,
                             )
+                            old_lc = (
+                                states[self._last_leader].tla
+                                if self._last_leader in states
+                                else None
+                            )
+                            if self._recorder:
+                                self._recorder.record_event(
+                                    self._tick_count,
+                                    "lead_change",
+                                    {"old_tla": old_lc, "new_tla": leader_tla},
+                                )
                             # Fix #1: await async switch_window
-                            if await self._adapter.switch_window(
+                            ok = await self._adapter.switch_window(
                                 worst_slot.slot_index,
                                 leader_tla,
                                 player_id=worst_slot.player_id,
-                            ):
+                            )
+                            if self._recorder:
+                                self._recorder.record_lead_change_swap(
+                                    self._tick_count,
+                                    worst_slot.slot_index,
+                                    old_lc,
+                                    leader_tla,
+                                    ok,
+                                    "" if ok else "switch_failed",
+                                )
+                            if ok:
                                 if worst_slot.slot_index < len(windows) and windows[worst_slot.slot_index].current_driver_number:
                                     self._scorer.record_removal(windows[worst_slot.slot_index].current_driver_number, removed_at=ref_time)
                                 windows[worst_slot.slot_index].current_tla = leader_tla
                                 windows[worst_slot.slot_index].current_driver_number = current_leader
                                 windows[worst_slot.slot_index].assigned_at = ref_time
                                 self._hysteresis.record_swaps(1)
+                            else:
+                                # Fix #26: Lead-change swap failed - add cooldown
+                                log.warning("lead_change_swap_failed", new_tla=leader_tla, slot=worst_slot.slot_index)
+                                self._swap_cooldown[leader_tla.upper()] = self._tick_count + 3
         # Always update last_leader (during grace period too, just don't trigger swaps)
         self._last_leader = current_leader
         if self._tick_count % 6 == 0:
@@ -298,7 +388,20 @@ class Orchestrator:
             sticky_swaps = []
         for swap in sticky_swaps:
             # Fix #1: await async switch_window
-            if self._adapter and await self._adapter.switch_window(swap.slot_index, swap.new_tla, player_id=swap.player_id):
+            ok = bool(
+                self._adapter
+                and await self._adapter.switch_window(
+                    swap.slot_index, swap.new_tla, player_id=swap.player_id
+                )
+            )
+            if self._recorder:
+                self._recorder.record_swap(
+                    self._tick_count,
+                    swap,
+                    ok,
+                    "" if ok else "sticky_swap_failed",
+                )
+            if ok:
                 if swap.slot_index < len(windows):
                     windows[swap.slot_index].current_tla = swap.new_tla
                     windows[swap.slot_index].current_driver_number = swap.new_driver_number
@@ -306,7 +409,9 @@ class Orchestrator:
                 self._hysteresis.record_swaps(1)
             else:
                 # Fix #9: Log sticky swap failure without updating window state
+                # Fix #26: Add cooldown for failed sticky swap
                 log.warning("sticky_swap_failed", slot=swap.slot_index, new_tla=swap.new_tla)
+                self._swap_cooldown[swap.new_tla.upper()] = self._tick_count + 3
         if sticky_swaps:
             log.info(
                 "sticky_swaps_executed",
@@ -320,7 +425,20 @@ class Orchestrator:
         swaps_executed = 0
         for swap in swaps:
             # Fix #1: await async switch_window
-            if self._adapter and await self._adapter.switch_window(swap.slot_index, swap.new_tla, player_id=swap.player_id):
+            ok = bool(
+                self._adapter
+                and await self._adapter.switch_window(
+                    swap.slot_index, swap.new_tla, player_id=swap.player_id
+                )
+            )
+            if self._recorder:
+                self._recorder.record_swap(
+                    self._tick_count,
+                    swap,
+                    ok,
+                    "" if ok else "plan_swap_failed",
+                )
+            if ok:
                 log.info(
                     "swap_executed",
                     slot=swap.slot_index,
@@ -339,11 +457,13 @@ class Orchestrator:
                 # Fix #25: Track last swap time for heartbeat (use ref_time for consistency)
                 self._last_swap_at = ref_time
             else:
+                # Fix #26: Add cooldown for failed swap
                 log.warning(
                     "swap_failed",
                     slot=swap.slot_index,
                     new_tla=swap.new_tla,
                 )
+                self._swap_cooldown[swap.new_tla.upper()] = self._tick_count + 3
         on_screen = [w.current_tla for w in windows if w.current_tla]
         log.info(
             "tick_end",

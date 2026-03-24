@@ -459,6 +459,8 @@ class StateManager:
             self._in_pit.discard(num)
 
     def ingest_race_control(self, records: list[dict]) -> None:
+        # Fix #27: Track first ingest to avoid setting lights_out from historical data
+        is_first_ingest = "race_control" not in self._first_ingest_done
         records = self._filter_new_records("race_control", records)
         for rec in records:
             date_str = rec.get("date", "")
@@ -523,6 +525,14 @@ class StateManager:
             st.safety_car_active = self._safety_car
             st.vsc_active = self._vsc
             st.session_status = self._session_status
+
+        # Fix #27: Reset flags set from historical data on first ingest
+        if is_first_ingest:
+            self._lights_out = False
+            self._safety_car = False
+            self._vsc = False
+            self._sc_phase = "none"
+            self._first_ingest_done.add("race_control")
 
     def ingest_car_data(self, records: list[dict]) -> None:
         # Fix #23: Apply _filter_new_records to car_data (highest volume endpoint)

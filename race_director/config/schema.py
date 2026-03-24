@@ -84,6 +84,8 @@ class OrchestratorConfig(BaseModel):
     manual_override_file: str = "/tmp/race_director_pause"
     startup_grace_ticks: int = 1
     watchdog_timeout_sec: float = 60.0  # Log CRITICAL if tick takes longer
+    test_mode: bool = False
+    test_data_dir: str = "data"
 
 
 class LoggingConfig(BaseModel):

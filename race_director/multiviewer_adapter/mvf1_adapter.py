@@ -262,6 +262,20 @@ class Mvf1Adapter:
             log.warning("playerSync_failed", error=str(e))
             return False
 
+    async def _validate_player_ready(self, player_id: str, min_time: float = 30.0) -> tuple[bool, float | None]:
+        """Fix #26: Validate that a player stream is actually loaded and playing race content."""
+        from mvf1 import MultiViewerForF1
+        mv = await asyncio.to_thread(MultiViewerForF1)
+        players = self._get_onboard_players(mv)
+        player = next((p for p in players if str(p.id) == player_id), None)
+        if not player:
+            return False, None
+        state = getattr(player, "state", None) or {}
+        t = state.get("interpolatedCurrentTime") or state.get("currentTime")
+        if t is None or (isinstance(t, float) and (math.isnan(t) or math.isinf(t))):
+            return False, None
+        return t >= min_time, t
+
     async def switch_window(self, slot_index: int, new_tla: str, player_id: int | None = None) -> bool:
         """Fix #1: Async method to avoid blocking event loop with time.sleep()."""
         if new_tla.upper() in self._failed_tlas:
@@ -397,9 +411,12 @@ class Mvf1Adapter:
             commentary_id = str(commentary.id) if commentary else None
 
             if new_player is None:
-                log.warning("no_new_player_after_switch")
-                log.info("mvf1_switch_success", slot=slot_index, new_tla=new_tla, player_id=0)
-                return True
+                # Fix #26: No player found after switch means failure, not success
+                log.warning("no_new_player_after_switch", slot=slot_index, new_tla=new_tla)
+                display.show_swap_failed(new_tla, "player not found after switch")
+                return False
+
+            new_pid = str(new_player.id)
 
             for attempt in range(1, SYNC_ATTEMPTS + 1):
                 if commentary_id:
@@ -454,12 +471,20 @@ class Mvf1Adapter:
                 try:
                     mv_final = await asyncio.to_thread(MultiViewerForF1)
                     await asyncio.to_thread(mv_final.player_sync_to_commentary)
-                    sync_path = "final_global_sync"
-                    sync_success = True
+                    # Fix #26: Validate player after final_global_sync instead of blindly trusting
+                    await asyncio.sleep(RETRY_WAIT)
+                    is_ready, player_time = await self._validate_player_ready(new_pid, SYNC_MIN_TIME)
+                    if is_ready:
+                        sync_path = "final_global_sync"
+                        sync_success = True
+                        drift = abs(player_time - target_time) if target_time and player_time else 0
+                        display.show_sync_result(new_tla, True, drift)
+                    else:
+                        sync_path = "final_global_sync_validation_failed"
+                        log.warning("final_global_sync_player_not_ready", player_id=new_pid, player_time=player_time)
                 except Exception as e:
                     log.warning("final_sync_failed", error=str(e))
                     sync_path = "all_failed"
-                    display.show_sync_result(new_tla, False)
 
             log.info(
                 "sync_result",
@@ -468,6 +493,13 @@ class Mvf1Adapter:
                 success=sync_success,
                 path=sync_path,
             )
+
+            # Fix #26: Hard gate - verify player is actually ready before declaring success
+            if not sync_success:
+                log.warning("swap_failed_readiness", slot=slot_index, new_tla=new_tla, 
+                           player_id=new_pid, sync_path=sync_path)
+                display.show_swap_failed(new_tla, "stream not ready")
+                return False
 
             log.info(
                 "mvf1_switch_success",

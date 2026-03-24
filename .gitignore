@@ -42,3 +42,6 @@ race_director.log
 
 # Data capture output
 capture_*.json
+
+# Test mode data capture
+data/

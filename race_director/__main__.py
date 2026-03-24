@@ -88,11 +88,21 @@ def main() -> None:
     )
     parser.add_argument("-c", "--config", default=None, help="Config file path")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Enable test mode: log all API data and decisions to data/",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     start_parser = subparsers.add_parser("start", help="Start the race director")
     start_parser.add_argument("-c", "--config", default=None, help="Config file path")
     start_parser.add_argument("--dry-run", action="store_true")
+    start_parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Enable test mode: log all API data and decisions to data/",
+    )
 
     args = parser.parse_args()
 
@@ -102,6 +112,8 @@ def main() -> None:
             args.config = None
         if not hasattr(args, "dry_run"):
             args.dry_run = False
+        if not hasattr(args, "test"):
+            args.test = False
 
     if args.config is None:
         if Path("config.local.yaml").exists():
@@ -112,9 +124,15 @@ def main() -> None:
     config = load_config(Path(args.config))
     if args.dry_run:
         config.orchestrator.dry_run = True
+    if getattr(args, "test", False):
+        config.orchestrator.test_mode = True
     setup_logging(config.logging.level, config.logging.format, config.logging.file)
     log = structlog.get_logger()
-    log.info("starting_race_director", dry_run=config.orchestrator.dry_run)
+    log.info(
+        "starting_race_director",
+        dry_run=config.orchestrator.dry_run,
+        test_mode=config.orchestrator.test_mode,
+    )
     orchestrator = Orchestrator(config=config)
     try:
         asyncio.run(orchestrator.run())

@@ -31,6 +31,21 @@ ENDPOINTS = [
 ]
 
 
+def _dedup_latest_per_driver_for_test(records: list[dict]) -> list[dict]:
+    """Keep latest record per driver_number by date (test mode / capture_data pattern)."""
+    per_driver: dict[int, dict] = {}
+    best_date: dict[int, str] = {}
+    for r in records:
+        num = r.get("driver_number")
+        if num is None:
+            continue
+        d = r.get("date", "") or ""
+        if num not in per_driver or d > best_date.get(num, ""):
+            best_date[num] = d
+            per_driver[num] = r
+    return list(per_driver.values())
+
+
 class OpenF1RestProvider:
     """Polls OpenF1 REST API and feeds StateManager."""
 
@@ -54,6 +69,9 @@ class OpenF1RestProvider:
         self._last_success: dict[str, datetime] = {}
         self._data_stale: bool = False
         self._poll_count: int = 0
+        # Test mode: raw API payloads per poll tick
+        self._tick_api_data: dict[str, list[dict]] = {}
+        self._session_meta: dict | None = None
 
     async def start(self) -> None:
         self._running = True
@@ -78,7 +96,9 @@ class OpenF1RestProvider:
 
     async def poll(self) -> None:
         self._poll_count += 1
-        
+        if self._config.orchestrator.test_mode:
+            self._tick_api_data.clear()
+
         # Fix #12: Ensure client exists before any fetches (session, grid, endpoints)
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(timeout=self._config.openf1.request_timeout_sec)
@@ -124,6 +144,9 @@ class OpenF1RestProvider:
             data = r.json()
             if isinstance(data, list) and data:
                 s = data[0]
+                self._session_meta = dict(s)
+                if self._config.orchestrator.test_mode:
+                    self._tick_api_data["sessions"] = list(data)
                 new_key = s.get("session_key")
                 if new_key != self._session_key:
                     self._grid_fetched = False
@@ -159,6 +182,8 @@ class OpenF1RestProvider:
             r.raise_for_status()
             data = r.json()
             if isinstance(data, list) and data:
+                if self._config.orchestrator.test_mode:
+                    self._tick_api_data["starting_grid"] = list(data)
                 grid: dict[int, int] = {}
                 for rec in data:
                     num = rec.get("driver_number")
@@ -204,6 +229,10 @@ class OpenF1RestProvider:
                                 earliest[num] = (date_key, int(pos))
                     grid = {num: pos for num, (_, pos) in earliest.items()}
                     if grid:
+                        if self._config.orchestrator.test_mode and "starting_grid" not in self._tick_api_data:
+                            self._tick_api_data["starting_grid"] = _dedup_latest_per_driver_for_test(
+                                list(data)
+                            )
                         self._state.set_grid_positions(grid)
                         self._grid_fetched = True
                         log.info("grid_from_positions", count=len(grid))
@@ -242,6 +271,11 @@ class OpenF1RestProvider:
                     self._last_success[endpoint] = datetime.now(UTC)
                     # Check if we can clear staleness
                     self._update_staleness()
+                    if self._config.orchestrator.test_mode:
+                        to_store = list(data)
+                        if endpoint in ("location", "car_data"):
+                            to_store = _dedup_latest_per_driver_for_test(to_store)
+                        self._tick_api_data[endpoint] = to_store
                 except Exception:
                     log.warning("ingest_failed", endpoint=endpoint, exc_info=True)
         except httpx.HTTPError as e:
@@ -294,3 +328,13 @@ class OpenF1RestProvider:
 
     def get_sc_phase(self) -> str:
         return self._state.get_sc_phase()
+
+    def get_session_meta(self) -> dict | None:
+        """Raw session dict from OpenF1 /sessions (first row), for test recorder naming."""
+        return self._session_meta
+
+    def get_tick_api_data(self) -> dict[str, list[dict]]:
+        """Snapshot of raw endpoint payloads for this poll; clears the buffer."""
+        out = dict(self._tick_api_data)
+        self._tick_api_data.clear()
+        return out
