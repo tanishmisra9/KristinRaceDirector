@@ -39,7 +39,18 @@ def score_interval_behind(state: DriverState, params: ScoringParams) -> float:
 
 
 def score_closing_trend(state: DriverState, _params: ScoringParams) -> float:
-    """Score based on whether the gap is closing. Negative trend = closing = good."""
+    """Score based on whether the gap is closing. Negative trend = closing = good.
+    
+    Fix #21: For the race leader, use interval_behind_trend (gap from car behind
+    closing in) instead of interval_trend (no car ahead to close on).
+    """
+    if state.position == 1:
+        # Leader uses interval_behind_trend - negative means P2 is closing
+        trend = state.interval_behind_trend
+        if trend >= 0:
+            return 0.0
+        return min(1.0, abs(trend) / 0.1)
+    
     trend = state.interval_trend
     if trend >= 0:
         return 0.0
@@ -136,30 +147,32 @@ def score_race_control_event(state: DriverState, _params: ScoringParams) -> floa
 
 def score_position_importance(state: DriverState, _params: ScoringParams) -> float:
     """Higher score for key positions: podium > points cutoff > midfield.
-    Leader is penalized when cruising with no pressure behind."""
+    
+    Fix #8: Use smooth decay function instead of if/elif chain to give every
+    position a meaningful score that decays naturally. Keep special cases for
+    P1-under-pressure and P10/P11 (points cutoff).
+    """
     pos = state.position
     if pos <= 0:
         return 0.0
+    
+    # Special case: Leader under pressure gets full score
     if pos == 1:
-        # Leader only gets full score if under pressure
         if state.interval_behind is not None and state.interval_behind < 2.0:
             return 1.0  # Under attack — compelling
         return 0.4  # Cruising — not interesting as an onboard
-    if pos == 2:
-        return 0.9
-    if pos == 3:
-        return 0.8
-    if pos == 4:
-        return 0.5
-    if pos == 5:
-        return 0.4
+    
+    # Fix #8: Smooth decay function for all other positions
+    # Formula: max(0.05, 1.0 / (1.0 + 0.3 * (pos - 1)))
+    base_score = max(0.05, 1.0 / (1.0 + 0.3 * (pos - 1)))
+    
+    # Special boost for P10/P11 (points cutoff battles)
     if pos == 10:
-        return 0.35
+        return max(base_score, 0.35)
     if pos == 11:
-        return 0.3
-    if 6 <= pos <= 9:
-        return 0.2
-    return 0.1
+        return max(base_score, 0.3)
+    
+    return base_score
 
 
 def score_stale_battle_penalty(
@@ -309,6 +322,10 @@ def score_screen_time_penalty(
 ) -> float:
     """Penalty for drivers who have been on screen a long time (applied with negative weight).
     Encourages variety by reducing score for drivers we've been showing.
+    
+    Fix #15: Reset the screen time penalty clock whenever a driver on screen has
+    an interesting action (overtake, flag, incident). This way the penalty only
+    kicks in when a driver has been boring on screen.
     """
     if reference_time.tzinfo is None:
         reference_time = reference_time.replace(tzinfo=UTC)
@@ -318,7 +335,17 @@ def score_screen_time_penalty(
             at = w.assigned_at
             if at.tzinfo is None:
                 at = at.replace(tzinfo=UTC)
-            elapsed = max(0.0, (reference_time - at).total_seconds())
+            
+            # Fix #15: Use the later of assigned_at and last_interesting_action
+            effective_start = at
+            if state.last_interesting_action is not None:
+                lia = state.last_interesting_action
+                if lia.tzinfo is None:
+                    lia = lia.replace(tzinfo=UTC)
+                if lia > at:
+                    effective_start = lia
+            
+            elapsed = max(0.0, (reference_time - effective_start).total_seconds())
             time_on_screen_sec = max(time_on_screen_sec, elapsed)
     if time_on_screen_sec <= 0:
         return 0.0

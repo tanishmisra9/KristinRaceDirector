@@ -43,7 +43,11 @@ class BattleScorer:
         self._recently_removed: dict[int, datetime] = {}
 
     def record_removal(self, driver_number: int, removed_at: datetime | None = None) -> None:
-        """Mark a driver as recently removed from a window (for anti-churn)."""
+        """Mark a driver as recently removed from a window (for anti-churn).
+        
+        Fix #17: Always use the same reference_time as score_all() for consistency.
+        Callers should pass removed_at=ref_time from the provider's reference time.
+        """
         self._recently_removed[driver_number] = removed_at if removed_at is not None else datetime.now(UTC)
 
     def cleanup_removals(self, cooldown_seconds: float, reference_time: datetime | None = None) -> None:

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
-import time
 from datetime import UTC, datetime
 
 import httpx
@@ -32,9 +32,11 @@ class Mvf1Adapter:
         self._schema_discovered: bool = False
         self._failed_tlas: set[str] = set()
         self._commentary_warning_shown: bool = False
+        # Fix #20: Track available GraphQL capabilities
+        self._capabilities: dict[str, bool] = {"mute": False, "sync": False}
 
     def _discover_mutations(self) -> None:
-        """Log available GraphQL mutations for debugging."""
+        """Log available GraphQL mutations and validate required ones (Fix #20)."""
         if self._schema_discovered:
             return
         try:
@@ -59,7 +61,22 @@ class Mvf1Adapter:
             """)
             data = result.get("data", {}).get("__schema", {}).get("mutationType", {})
             mutations = data.get("fields", [])
-            log.info("multiviewer_mutations", names=[m["name"] for m in mutations])
+            mutation_names = [m["name"] for m in mutations]
+            log.info("multiviewer_mutations", names=mutation_names)
+            
+            # Fix #20: Validate required mutations and set capabilities
+            if "playerSetMuted" in mutation_names:
+                self._capabilities["mute"] = True
+            else:
+                log.error("playerSetMuted_missing", available_mutations=mutation_names,
+                          hint="MultiViewer version may be incompatible")
+            
+            if "playerSync" in mutation_names:
+                self._capabilities["sync"] = True
+            else:
+                log.error("playerSync_missing", available_mutations=mutation_names,
+                          hint="MultiViewer version may be incompatible")
+            
             seek = next((m for m in mutations if m["name"] == "playerSeekTo"), None)
             if seek:
                 log.info("playerSeekTo_args", args=seek.get("args", []))
@@ -68,6 +85,8 @@ class Mvf1Adapter:
             bounds_mutation = next((m for m in mutations if m["name"] == "playerSetBounds"), None)
             if bounds_mutation:
                 log.info("playerSetBounds_args", args=bounds_mutation.get("args", []))
+            
+            log.info("multiviewer_capabilities", capabilities=self._capabilities)
             self._schema_discovered = True
         except Exception as e:
             log.debug("schema_discovery_failed", error=str(e))
@@ -201,6 +220,10 @@ class Mvf1Adapter:
 
     def _set_player_muted(self, player_id: str, muted: bool) -> bool:
         """Mute or unmute a player via GraphQL."""
+        # Fix #20: Check capability before attempting
+        if not self._capabilities.get("mute"):
+            log.debug("mute_capability_unavailable", player_id=player_id)
+            return False
         query = """
         mutation PlayerSetMuted($id: ID!, $muted: Boolean) {
             playerSetMuted(id: $id, muted: $muted)
@@ -217,6 +240,10 @@ class Mvf1Adapter:
 
     def _sync_via_player_sync(self, commentary_player_id: str) -> bool:
         """Sync all players to commentary via playerSync mutation (same as pressing S)."""
+        # Fix #20: Check capability before attempting
+        if not self._capabilities.get("sync"):
+            log.debug("sync_capability_unavailable")
+            return False
         query = """
         mutation PlayerSync($id: ID!) {
             playerSync(id: $id)
@@ -235,15 +262,25 @@ class Mvf1Adapter:
             log.warning("playerSync_failed", error=str(e))
             return False
 
-    def switch_window(self, slot_index: int, new_tla: str, player_id: int | None = None) -> bool:
+    async def switch_window(self, slot_index: int, new_tla: str, player_id: int | None = None) -> bool:
+        """Fix #1: Async method to avoid blocking event loop with time.sleep()."""
         if new_tla.upper() in self._failed_tlas:
             log.debug("skipping_blacklisted_tla", tla=new_tla)
             return False
         try:
             from mvf1 import MultiViewerForF1
-            mv = MultiViewerForF1()
+            # Fix #1: Wrap blocking mvf1 call in asyncio.to_thread
+            mv = await asyncio.to_thread(MultiViewerForF1)
             players = self._get_onboard_players(mv)
             player_by_id = {str(p.id): p for p in players}
+
+            # Fix #11: Validate slot assignment is still alive
+            if slot_index in self._slot_assignments:
+                assigned_pid = self._slot_assignments[slot_index]
+                if assigned_pid not in player_by_id:
+                    log.warning("slot_assignment_stale", slot=slot_index, 
+                               assigned_pid=assigned_pid, available=list(player_by_id.keys()))
+                    return False
 
             player = None
             pid_str = str(player_id) if player_id is not None else None
@@ -286,7 +323,8 @@ class Mvf1Adapter:
             if not old_tla_backup:
                 old_tla_backup = getattr(player, "title", "")
             try:
-                player.switch_stream(new_tla)
+                # Fix #1: Wrap blocking switch_stream call in asyncio.to_thread
+                await asyncio.to_thread(player.switch_stream, new_tla)
             except Exception as e:
                 error_msg = str(e)
                 if "NaN" in error_msg:
@@ -297,12 +335,12 @@ class Mvf1Adapter:
                         hint="Player state contains NaN",
                     )
                     try:
-                        mv_retry = MultiViewerForF1()
+                        mv_retry = await asyncio.to_thread(MultiViewerForF1)
                         if hasattr(mv_retry, "player_delete"):
-                            mv_retry.player_delete(int(player.id))
-                            time.sleep(0.5)
+                            await asyncio.to_thread(mv_retry.player_delete, int(player.id))
+                            await asyncio.sleep(0.5)
                         if hasattr(mv_retry, "player_create"):
-                            mv_retry.player_create(new_tla)
+                            await asyncio.to_thread(mv_retry.player_create, new_tla)
                             old_ids.discard(str(player.id))
                             log.info("manual_player_create", tla=new_tla)
                         else:
@@ -316,8 +354,8 @@ class Mvf1Adapter:
                     display.show_stream_unavailable(new_tla)
                     if old_tla_backup:
                         try:
-                            mv_restore = MultiViewerForF1()
-                            mv_restore.player_create(old_tla_backup)
+                            mv_restore = await asyncio.to_thread(MultiViewerForF1)
+                            await asyncio.to_thread(mv_restore.player_create, old_tla_backup)
                             log.info("window_restored", old_tla=old_tla_backup)
                             if slot_index in self._slot_assignments:
                                 del self._slot_assignments[slot_index]
@@ -330,9 +368,10 @@ class Mvf1Adapter:
             RETRY_WAIT = 1.5
             SYNC_MIN_TIME = 30.0
 
-            time.sleep(INITIAL_WAIT)
+            # Fix #1: Use asyncio.sleep instead of time.sleep
+            await asyncio.sleep(INITIAL_WAIT)
 
-            mv = MultiViewerForF1()
+            mv = await asyncio.to_thread(MultiViewerForF1)
             new_players = self._get_onboard_players(mv)
             new_player = None
             for p in sorted(new_players, key=lambda x: str(x.id), reverse=True):
@@ -366,9 +405,10 @@ class Mvf1Adapter:
                 if commentary_id:
                     self._sync_via_player_sync(commentary_id)
 
-                time.sleep(RETRY_WAIT)
+                # Fix #1: Use asyncio.sleep instead of time.sleep
+                await asyncio.sleep(RETRY_WAIT)
 
-                mv = MultiViewerForF1()
+                mv = await asyncio.to_thread(MultiViewerForF1)
                 fresh_players = self._get_onboard_players(mv)
                 refreshed = next(
                     (p for p in fresh_players if str(p.id) == str(new_player.id)),
@@ -412,8 +452,8 @@ class Mvf1Adapter:
 
             if not sync_success:
                 try:
-                    mv_final = MultiViewerForF1()
-                    mv_final.player_sync_to_commentary()
+                    mv_final = await asyncio.to_thread(MultiViewerForF1)
+                    await asyncio.to_thread(mv_final.player_sync_to_commentary)
                     sync_path = "final_global_sync"
                     sync_success = True
                 except Exception as e:

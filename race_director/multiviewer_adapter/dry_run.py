@@ -45,7 +45,8 @@ class DryRunAdapter:
     def get_current_windows(self) -> list[WindowSlot]:
         return self._slots
 
-    def switch_window(self, slot_index: int, new_tla: str, player_id: int | None = None) -> bool:
+    async def switch_window(self, slot_index: int, new_tla: str, player_id: int | None = None) -> bool:
+        """Fix #1: Async for interface parity with Mvf1Adapter."""
         if 0 <= slot_index < len(self._slots):
             old = self._slots[slot_index].current_tla
             self._slots[slot_index].current_tla = new_tla

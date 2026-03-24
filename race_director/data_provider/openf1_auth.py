@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import httpx
@@ -45,21 +46,28 @@ class OpenF1TokenManager:
         self._password = password
         self._token: str | None = None
         self._expires_at: float = 0.0
+        # Fix #5: Lock to prevent concurrent token refreshes
+        self._lock = asyncio.Lock()
 
     async def get_valid_token(self) -> str:
-        """Return a valid access token, refreshing if expired or missing."""
-        now = time.time()
-        if self._token and self._expires_at > now:
-            return self._token
-        try:
-            token, expires_in = await fetch_token(self._username, self._password)
-            self._token = token
-            self._expires_at = time.time() + (expires_in - REFRESH_BUFFER_SEC)
-            log.info("openf1_token_obtained", expires_in=expires_in)
-            return self._token
-        except Exception as e:
-            log.warning("openf1_token_refresh_failed", error=str(e))
-            if self._token:
-                log.info("using_stale_token")
+        """Return a valid access token, refreshing if expired or missing.
+        
+        Fix #5: Uses a lock to prevent race conditions when multiple coroutines
+        call this simultaneously with an expired token.
+        """
+        async with self._lock:
+            now = time.time()
+            if self._token and self._expires_at > now:
                 return self._token
-            raise
+            try:
+                token, expires_in = await fetch_token(self._username, self._password)
+                self._token = token
+                self._expires_at = time.time() + (expires_in - REFRESH_BUFFER_SEC)
+                log.info("openf1_token_obtained", expires_in=expires_in)
+                return self._token
+            except Exception as e:
+                log.warning("openf1_token_refresh_failed", error=str(e))
+                if self._token:
+                    log.info("using_stale_token")
+                    return self._token
+                raise

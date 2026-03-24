@@ -53,6 +53,7 @@ class DriverState(BaseModel):
 
     # Trend data (populated by StateManager from ring buffer)
     interval_trend: float = 0.0  # negative = closing on car ahead
+    interval_behind_trend: float = 0.0  # Fix #21: trend for interval_behind (leader closing)
 
     # Pit status
     in_pit: bool = False
@@ -84,3 +85,6 @@ class DriverState(BaseModel):
     grid_position: int = 0  # start position; 0 = unknown
     recent_incident_time: datetime | None = None
     battle_duration_seconds: float = 0.0  # time in close battle (small gap)
+    
+    # Fix #15: Track last interesting action for screen time penalty reset
+    last_interesting_action: datetime | None = None

@@ -111,7 +111,9 @@ class HysteresisEngine:
 
             for i, (slot_idx, slot_score) in enumerate(swappable):
                 improvement = candidate.total_score - slot_score
-                if improvement >= cfg.swap_improvement_threshold:
+                # Fix #18: Use relative threshold - require either absolute or % improvement
+                threshold = max(cfg.swap_improvement_threshold, slot_score * cfg.swap_improvement_ratio)
+                if improvement >= threshold:
                     slot = next((w for w in current_windows if w.slot_index == slot_idx), None)
                     if slot is None:
                         continue

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 import httpx
 import structlog
@@ -15,6 +16,8 @@ from race_director.models.session import SessionInfo
 log = structlog.get_logger()
 
 RATE_LIMIT_DELAY_SEC = 0.2  # 200ms between requests to stay under 6 req/sec
+# Fix #4: Critical endpoints that trigger staleness if they fail repeatedly
+CRITICAL_ENDPOINTS = {"intervals", "position"}
 ENDPOINTS = [
     ("drivers", "ingest_drivers"),
     ("intervals", "ingest_intervals"),
@@ -42,13 +45,28 @@ class OpenF1RestProvider:
             self._token_manager = OpenF1TokenManager(
                 config.openf1.username, config.openf1.password
             )
+        
+        # Fix #12: Persistent HTTP client for connection reuse
+        self._client: httpx.AsyncClient | None = None
+        
+        # Fix #4 & #13: Endpoint health tracking
+        self._consecutive_failures: dict[str, int] = {}
+        self._last_success: dict[str, datetime] = {}
+        self._data_stale: bool = False
+        self._poll_count: int = 0
 
     async def start(self) -> None:
         self._running = True
+        # Fix #12: Create persistent HTTP client
+        self._client = httpx.AsyncClient(timeout=self._config.openf1.request_timeout_sec)
         await self._fetch_session()
 
     async def stop(self) -> None:
         self._running = False
+        # Fix #12: Close persistent HTTP client
+        if self._client:
+            await self._client.aclose()
+            self._client = None
 
     async def _auth_headers(self) -> dict[str, str]:
         """Return headers with Bearer token when authenticated."""
@@ -59,22 +77,30 @@ class OpenF1RestProvider:
         return headers
 
     async def poll(self) -> None:
+        self._poll_count += 1
         await self._fetch_session()
         if not self._session_key:
             return
         headers = await self._auth_headers()
         await self._fetch_starting_grid(headers)
-        async with httpx.AsyncClient(
-            timeout=self._config.openf1.request_timeout_sec
-        ) as c:
-            for endpoint, handler_name in ENDPOINTS:
-                handler = getattr(self._state, handler_name, None)
-                if handler_name == "_ingest_race_control":
-                    handler = self._ingest_race_control
-                if handler is not None:
-                    await self._fetch(c, endpoint, handler, headers)
-                    await asyncio.sleep(RATE_LIMIT_DELAY_SEC)
+        
+        # Fix #12: Use persistent client, recreate if closed
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self._config.openf1.request_timeout_sec)
+        
+        for endpoint, handler_name in ENDPOINTS:
+            handler = getattr(self._state, handler_name, None)
+            if handler_name == "_ingest_race_control":
+                handler = self._ingest_race_control
+            if handler is not None:
+                await self._fetch(self._client, endpoint, handler, headers)
+                await asyncio.sleep(RATE_LIMIT_DELAY_SEC)
+        
         self._state.expire_stale_events()
+        
+        # Fix #13: Log periodic health summary every 30 ticks
+        if self._poll_count % 30 == 0:
+            self._log_endpoint_health()
 
     async def _fetch_session(self) -> None:
         cfg = self._config.openf1
@@ -98,7 +124,12 @@ class OpenF1RestProvider:
                     new_key = s.get("session_key")
                     if new_key != self._session_key:
                         self._grid_fetched = False
-                        self._state.reset_filters()
+                        # Fix #2: Full state reset on session change, not just filters
+                        self._state.reset()
+                        # Also reset endpoint health tracking for new session
+                        self._consecutive_failures.clear()
+                        self._last_success.clear()
+                        self._data_stale = False
                     self._session_key = new_key
                     name = s.get("session_name", "")
                     stype = "Sprint" if "sprint" in name.lower() else "Race"
@@ -214,10 +245,45 @@ class OpenF1RestProvider:
             if isinstance(data, list):
                 try:
                     handler(data)
+                    # Fix #4: Reset failure count on success
+                    self._consecutive_failures[endpoint] = 0
+                    self._last_success[endpoint] = datetime.now(UTC)
+                    # Check if we can clear staleness
+                    self._update_staleness()
                 except Exception:
                     log.warning("ingest_failed", endpoint=endpoint, exc_info=True)
-        except httpx.HTTPError:
-            pass
+        except httpx.HTTPError as e:
+            # Fix #4: Track consecutive failures
+            self._consecutive_failures[endpoint] = self._consecutive_failures.get(endpoint, 0) + 1
+            log.debug("fetch_failed", endpoint=endpoint, failures=self._consecutive_failures[endpoint], error=str(e))
+            self._update_staleness()
+    
+    def _update_staleness(self) -> None:
+        """Fix #4: Update data staleness flag based on critical endpoint failures."""
+        for ep in CRITICAL_ENDPOINTS:
+            if self._consecutive_failures.get(ep, 0) > 5:
+                if not self._data_stale:
+                    log.warning("data_marked_stale", failed_endpoint=ep, consecutive_failures=self._consecutive_failures[ep])
+                self._data_stale = True
+                return
+        # All critical endpoints are healthy
+        if self._data_stale:
+            log.info("data_freshness_restored")
+        self._data_stale = False
+    
+    def _log_endpoint_health(self) -> None:
+        """Fix #13: Log periodic summary of endpoint health status."""
+        health = {}
+        for endpoint, _ in ENDPOINTS:
+            failures = self._consecutive_failures.get(endpoint, 0)
+            last_ok = self._last_success.get(endpoint)
+            status = "ok" if failures == 0 else f"failing({failures})"
+            health[endpoint] = {"status": status, "last_success": last_ok.isoformat() if last_ok else None}
+        log.info("endpoint_health_summary", health=health, data_stale=self._data_stale)
+    
+    def is_data_fresh(self) -> bool:
+        """Fix #4: Return True if data is fresh (no critical endpoint failures)."""
+        return not self._data_stale
 
     def get_reference_time(self):
         return self._state.get_reference_time()

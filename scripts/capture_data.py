@@ -67,7 +67,6 @@ async def fetch_endpoint(
     timeout: float = 8.0,
 ) -> list[dict] | None:
     """Fetch data from a single endpoint."""
-    import httpx
 
     url = f"{base_url}/{endpoint}"
     try:
@@ -130,8 +129,15 @@ async def main_loop(
     session_key: int,
     duration_sec: int,
     poll_interval: float = 4.0,
+    username: str = "",
+    password: str = "",
+    token_obtained_at: float = 0.0,
+    expires_in: int = 3600,
 ):
-    """Main capture loop."""
+    """Main capture loop.
+    
+    Fix #16: Supports token refresh during long captures by tracking token expiry.
+    """
     import httpx
 
     capture = {
@@ -146,6 +152,11 @@ async def main_loop(
 
     # Track last seen dates per endpoint for delta detection
     last_dates: dict[str, str] = {}
+    
+    # Fix #16: Token refresh tracking
+    current_headers = dict(headers)
+    token_time = token_obtained_at
+    token_expires = expires_in
 
     tick = 0
     start_time = time.time()
@@ -155,13 +166,27 @@ async def main_loop(
         # One-shot fetches
         for ep in ONCE:
             print(f"  Fetching {ep}...")
-            data = await fetch_endpoint(client, base_url, ep, session_key, headers)
+            data = await fetch_endpoint(client, base_url, ep, session_key, current_headers)
             if data:
                 capture[f"static_{ep}"] = data
                 print(f"    {ep}: {len(data)} records")
 
         try:
             while time.time() - start_time < duration_sec:
+                # Fix #16: Check if token needs refresh (10 min before expiry)
+                if username and password and token_time > 0:
+                    elapsed_since_token = time.time() - token_time
+                    if elapsed_since_token > (token_expires - 600):
+                        print("  Refreshing token...")
+                        try:
+                            new_token, new_expires = await get_token(username, password)
+                            current_headers["Authorization"] = f"Bearer {new_token}"
+                            token_time = time.time()
+                            token_expires = new_expires
+                            print(f"  Token refreshed (expires in {new_expires}s)")
+                        except Exception as e:
+                            print(f"  [warn] Token refresh failed: {e}")
+                
                 tick += 1
                 tick_start = datetime.now(UTC)
                 tick_data: dict[str, Any] = {
@@ -177,7 +202,7 @@ async def main_loop(
 
                 for ep in endpoints_this_tick:
                     data = await fetch_endpoint(
-                        client, base_url, ep, session_key, headers
+                        client, base_url, ep, session_key, current_headers
                     )
                     if data is None:
                         continue
@@ -284,6 +309,7 @@ def main():
 
     # Get token
     token, expires_in = asyncio.run(get_token(username, password))
+    token_obtained_at = time.time()
     print(f"Token obtained (expires in {expires_in}s)")
     headers = {
         "accept": "application/json",
@@ -296,7 +322,7 @@ def main():
         print("ERROR: No session found")
         sys.exit(1)
 
-    # Run capture
+    # Run capture (Fix #16: pass credentials for token refresh during long captures)
     capture = asyncio.run(
         main_loop(
             base_url,
@@ -304,6 +330,10 @@ def main():
             session_key,
             args.duration,
             args.poll_interval,
+            username=username,
+            password=password,
+            token_obtained_at=token_obtained_at,
+            expires_in=expires_in,
         )
     )
 
@@ -318,8 +348,8 @@ def main():
     print(f"Total ticks: {capture['meta']['total_ticks']}")
     print(f"Duration: {capture['meta']['duration_sec']}s")
     print(
-        f"\nNext: watch the replay, take notes on what cameras should show, "
-        f"then provide both the JSON and your notes for analysis."
+        "\nNext: watch the replay, take notes on what cameras should show, "
+        "then provide both the JSON and your notes for analysis."
     )
 
 

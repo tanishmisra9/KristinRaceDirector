@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import signal
-from datetime import datetime
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -16,6 +18,9 @@ from race_director.data_provider.openf1_rest import OpenF1RestProvider
 from race_director.orchestrator.hysteresis import HysteresisEngine
 
 log = structlog.get_logger()
+
+# Fix #25: Heartbeat file location
+HEARTBEAT_FILE = Path("/tmp/kristin_heartbeat")
 
 
 class Orchestrator:
@@ -32,6 +37,9 @@ class Orchestrator:
         self._last_leader: int | None = None
         self._last_sc_phase: str = "none"
         self._consecutive_no_windows: int = 0
+        # Fix #25: Watchdog tracking
+        self._last_tick_completed_at: float = time.monotonic()
+        self._last_swap_at: datetime | None = None
         self._adapter = None
         if config.orchestrator.dry_run:
             from race_director.multiviewer_adapter.dry_run import DryRunAdapter
@@ -74,13 +82,39 @@ class Orchestrator:
             display.show_multiviewer_not_found()
         try:
             while not self._shutting_down:
+                # Fix #25: Watchdog - check if previous tick took too long
+                tick_start = time.monotonic()
+                elapsed_since_last = tick_start - self._last_tick_completed_at
+                if elapsed_since_last > self._config.orchestrator.watchdog_timeout_sec:
+                    log.critical("watchdog_tick_timeout", 
+                                elapsed_sec=round(elapsed_since_last, 1),
+                                timeout_threshold=self._config.orchestrator.watchdog_timeout_sec)
+                
                 await self._tick()
+                
+                # Fix #25: Update watchdog and write heartbeat
+                self._last_tick_completed_at = time.monotonic()
+                self._write_heartbeat()
+                
                 await asyncio.sleep(self._config.orchestrator.tick_interval_sec)
         except asyncio.CancelledError:
             pass
         finally:
             await self._provider.stop()
             log.info("orchestrator_stopped")
+
+    def _write_heartbeat(self) -> None:
+        """Fix #25: Write heartbeat file for external monitoring."""
+        try:
+            heartbeat = {
+                "tick": self._tick_count,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "last_swap_at": self._last_swap_at.isoformat() if self._last_swap_at else None,
+                "data_fresh": self._provider.is_data_fresh(),
+            }
+            HEARTBEAT_FILE.write_text(json.dumps(heartbeat))
+        except Exception as e:
+            log.debug("heartbeat_write_failed", error=str(e))
 
     async def _tick(self) -> None:
         self._tick_count += 1
@@ -94,6 +128,12 @@ class Orchestrator:
             if self._tick_count % 6 == 0:
                 display.show_poll_error()
             return
+        
+        # Fix #4: Skip scoring/swaps if data is stale
+        if not self._provider.is_data_fresh():
+            log.warning("data_stale_skipping_swaps", tick=self._tick_count)
+            return
+        
         states = self._provider.get_driver_states()
         session = self._provider.get_session_info()
         if not states:
@@ -185,45 +225,51 @@ class Orchestrator:
             if state.position == 1:
                 current_leader = num
                 break
+        
+        # Fix #10: Defer lead change swaps until after grace period + 3 ticks for stabilization
+        lead_change_grace = self._config.orchestrator.startup_grace_ticks + 3
         if current_leader and self._last_leader and current_leader != self._last_leader:
-            leader_tla = states[current_leader].tla if current_leader in states else None
-            if leader_tla:
-                already_on_screen = any(
-                    w.current_tla.upper() == leader_tla.upper() for w in windows if w.current_tla
-                )
-                if not already_on_screen:
-                    ranked_by_num = {r.driver_number: r for r in ranked}
-                    worst_slot = None
-                    worst_score = float("inf")
-                    for w in windows:
-                        if w.current_driver_number and w.current_driver_number in ranked_by_num:
-                            score = ranked_by_num[w.current_driver_number].total_score
-                            if score < worst_score:
-                                worst_score = score
-                                worst_slot = w
-                    if worst_slot and self._adapter:
-                        log.info(
-                            "lead_change_detected",
-                            old_leader=self._last_leader,
-                            new_leader=current_leader,
-                            new_tla=leader_tla,
-                            replacing_slot=worst_slot.slot_index,
-                        )
-                        display.show_lead_change(
-                            states[self._last_leader].tla if self._last_leader in states else None,
-                            leader_tla,
-                        )
-                        if self._adapter.switch_window(
-                            worst_slot.slot_index,
-                            leader_tla,
-                            player_id=worst_slot.player_id,
-                        ):
-                            if worst_slot.slot_index < len(windows) and windows[worst_slot.slot_index].current_driver_number:
-                                self._scorer.record_removal(windows[worst_slot.slot_index].current_driver_number, removed_at=ref_time)
-                            windows[worst_slot.slot_index].current_tla = leader_tla
-                            windows[worst_slot.slot_index].current_driver_number = current_leader
-                            windows[worst_slot.slot_index].assigned_at = ref_time
-                            self._hysteresis.record_swaps(1)
+            if self._tick_count > lead_change_grace:
+                leader_tla = states[current_leader].tla if current_leader in states else None
+                if leader_tla:
+                    already_on_screen = any(
+                        w.current_tla.upper() == leader_tla.upper() for w in windows if w.current_tla
+                    )
+                    if not already_on_screen:
+                        ranked_by_num = {r.driver_number: r for r in ranked}
+                        worst_slot = None
+                        worst_score = float("inf")
+                        for w in windows:
+                            if w.current_driver_number and w.current_driver_number in ranked_by_num:
+                                score = ranked_by_num[w.current_driver_number].total_score
+                                if score < worst_score:
+                                    worst_score = score
+                                    worst_slot = w
+                        if worst_slot and self._adapter:
+                            log.info(
+                                "lead_change_detected",
+                                old_leader=self._last_leader,
+                                new_leader=current_leader,
+                                new_tla=leader_tla,
+                                replacing_slot=worst_slot.slot_index,
+                            )
+                            display.show_lead_change(
+                                states[self._last_leader].tla if self._last_leader in states else None,
+                                leader_tla,
+                            )
+                            # Fix #1: await async switch_window
+                            if await self._adapter.switch_window(
+                                worst_slot.slot_index,
+                                leader_tla,
+                                player_id=worst_slot.player_id,
+                            ):
+                                if worst_slot.slot_index < len(windows) and windows[worst_slot.slot_index].current_driver_number:
+                                    self._scorer.record_removal(windows[worst_slot.slot_index].current_driver_number, removed_at=ref_time)
+                                windows[worst_slot.slot_index].current_tla = leader_tla
+                                windows[worst_slot.slot_index].current_driver_number = current_leader
+                                windows[worst_slot.slot_index].assigned_at = ref_time
+                                self._hysteresis.record_swaps(1)
+        # Always update last_leader (during grace period too, just don't trigger swaps)
         self._last_leader = current_leader
         if self._tick_count % 6 == 0:
             log.info(
@@ -253,12 +299,16 @@ class Orchestrator:
         else:
             sticky_swaps = []
         for swap in sticky_swaps:
-            if self._adapter and self._adapter.switch_window(swap.slot_index, swap.new_tla, player_id=swap.player_id):
+            # Fix #1: await async switch_window
+            if self._adapter and await self._adapter.switch_window(swap.slot_index, swap.new_tla, player_id=swap.player_id):
                 if swap.slot_index < len(windows):
                     windows[swap.slot_index].current_tla = swap.new_tla
                     windows[swap.slot_index].current_driver_number = swap.new_driver_number
                     windows[swap.slot_index].assigned_at = ref_time
                 self._hysteresis.record_swaps(1)
+            else:
+                # Fix #9: Log sticky swap failure without updating window state
+                log.warning("sticky_swap_failed", slot=swap.slot_index, new_tla=swap.new_tla)
         if sticky_swaps:
             log.info(
                 "sticky_swaps_executed",
@@ -271,7 +321,8 @@ class Orchestrator:
         swaps = self._hysteresis.plan_swaps(windows, ranked, tla_map, session=session, reference_time=ref_time)
         swaps_executed = 0
         for swap in swaps:
-            if self._adapter and self._adapter.switch_window(swap.slot_index, swap.new_tla, player_id=swap.player_id):
+            # Fix #1: await async switch_window
+            if self._adapter and await self._adapter.switch_window(swap.slot_index, swap.new_tla, player_id=swap.player_id):
                 log.info(
                     "swap_executed",
                     slot=swap.slot_index,
@@ -287,6 +338,8 @@ class Orchestrator:
                 windows[swap.slot_index].assigned_at = ref_time
                 self._hysteresis.record_swaps(1)
                 swaps_executed += 1
+                # Fix #25: Track last swap time for heartbeat
+                self._last_swap_at = datetime.now(UTC)
             else:
                 log.warning(
                     "swap_failed",

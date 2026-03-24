@@ -32,6 +32,8 @@ class StateManager:
 
         # Ring buffers for interval trend computation
         self._interval_history: dict[int, deque[IntervalSample]] = {}
+        # Ring buffers for interval_behind trend (Fix #21: leader closing trend)
+        self._interval_behind_history: dict[int, deque[IntervalSample]] = {}
 
         # Track global race phase
         self._safety_car = False
@@ -58,6 +60,9 @@ class StateManager:
         # Timestamp tracking for replay: only process new records per endpoint
         self._last_processed_date: dict[str, str] = {}
 
+        # Track which endpoints have completed their first (baseline) ingest (Fix #3)
+        self._first_ingest_done: set[str] = set()
+
         # Latest data timestamp — used as reference time for scoring (replay/live)
         self._latest_data_time: datetime = datetime.now(UTC)
 
@@ -82,6 +87,44 @@ class StateManager:
     def reset_filters(self) -> None:
         """Reset timestamp filters — called when session changes."""
         self._last_processed_date.clear()
+
+    def reset(self) -> None:
+        """Full reset of all per-driver state — called on session change (Fix #2)."""
+        self._drivers.clear()
+        self._states.clear()
+        self._interval_history.clear()
+        self._interval_behind_history.clear()
+        self._battle_start.clear()
+        self._recent_overtakes.clear()
+        self._pit_exits.clear()
+        self._in_pit.clear()
+        self._in_pit_since.clear()
+        self._driver_flags.clear()
+        self._first_ingest_done.clear()
+        self._last_processed_date.clear()
+        self._latest_data_time = datetime.now(UTC)
+        self._lights_out = False
+        self._safety_car = False
+        self._vsc = False
+        self._sc_phase = "none"
+        self._session_status = "Unknown"
+        self._lap_number = 0
+        self._restart_lap = False
+        self._sc_ended_recently = False
+        log.info("state_manager_reset")
+
+    def _parse_date(self, date_str: str) -> datetime:
+        """Parse ISO date string with fallback to latest data time (Fix #7).
+        
+        Uses _latest_data_time as fallback instead of datetime.now(UTC) to avoid
+        corrupting time-based scoring during replay mode.
+        """
+        if not date_str:
+            return self._latest_data_time
+        try:
+            return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return self._latest_data_time
 
     def _filter_new_records(self, endpoint: str, records: list[dict]) -> list[dict]:
         """Filter records to only those newer than the last processed date.
@@ -137,6 +180,7 @@ class StateManager:
                 )
 
     def ingest_intervals(self, records: list[dict]) -> None:
+        is_first_ingest = "intervals" not in self._first_ingest_done
         records = self._filter_new_records("intervals", records)
         if len(records) > 1000:
             latest_per_driver: dict[int, dict] = {}
@@ -157,10 +201,7 @@ class StateManager:
             gap_raw = rec.get("gap_to_leader")
             date_str = rec.get("date", "")
 
-            try:
-                date = datetime.fromisoformat(date_str.replace("Z", "+00:00")) if date_str else datetime.now(UTC)
-            except (ValueError, TypeError):
-                date = datetime.now(UTC)
+            date = self._parse_date(date_str)
             if date > self._latest_data_time:
                 self._latest_data_time = date
 
@@ -194,8 +235,45 @@ class StateManager:
 
         self._derive_interval_behind()
 
+        # Populate interval_behind_history after deriving interval_behind (Fix #21)
+        for num, state in self._states.items():
+            if num not in self._interval_behind_history:
+                self._interval_behind_history[num] = deque(
+                    maxlen=self._params.trend_window_samples
+                )
+            if state.interval_behind is not None:
+                self._interval_behind_history[num].append(
+                    IntervalSample(interval=state.interval_behind, gap_to_leader=None, date=self._latest_data_time)
+                )
+            state.interval_behind_trend = self._compute_behind_trend(num)
+
+        # Fix #3: Clear trend history after first ingest to avoid pollution from historical data
+        if is_first_ingest:
+            self._interval_history.clear()
+            self._interval_behind_history.clear()
+            self._first_ingest_done.add("intervals")
+
     def _compute_trend(self, driver_number: int) -> float:
         history = self._interval_history.get(driver_number)
+        if not history or len(history) < 3:
+            return 0.0
+
+        values = [s.interval for s in history if s.interval is not None]
+        if len(values) < 3:
+            return 0.0
+
+        n = len(values)
+        x_mean = (n - 1) / 2.0
+        y_mean = sum(values) / n
+        num = sum((i - x_mean) * (v - y_mean) for i, v in enumerate(values))
+        den = sum((i - x_mean) ** 2 for i in range(n))
+        if den == 0:
+            return 0.0
+        return num / den
+
+    def _compute_behind_trend(self, driver_number: int) -> float:
+        """Compute trend for interval_behind (Fix #21: leader closing trend)."""
+        history = self._interval_behind_history.get(driver_number)
         if not history or len(history) < 3:
             return 0.0
 
@@ -231,39 +309,45 @@ class StateManager:
             return 0.0
 
     def _derive_interval_behind(self) -> None:
-        by_position: dict[int, int] = {}
-        for num, st in self._states.items():
-            if st.position > 0:
-                by_position[st.position] = num
-
-        for pos, num in by_position.items():
-            behind_num = by_position.get(pos + 1)
-            if behind_num is not None:
-                self._states[num].interval_behind = self._states[
-                    behind_num
-                ].interval_to_ahead
+        """Derive interval_behind for each driver from the car behind's interval_to_ahead.
+        
+        Fix #19: Handle position gaps (e.g., P1, P2, P4 with no P3 due to retirement)
+        by using sorted position order instead of assuming continuous numbering.
+        """
+        # Build list of (position, driver_number) sorted by position
+        position_order = sorted(
+            [(st.position, num) for num, st in self._states.items() if st.position > 0],
+            key=lambda x: x[0]
+        )
+        
+        # Link each driver to the next driver in sorted order
+        for i, (pos, num) in enumerate(position_order):
+            if i + 1 < len(position_order):
+                behind_num = position_order[i + 1][1]
+                self._states[num].interval_behind = self._states[behind_num].interval_to_ahead
             else:
                 self._states[num].interval_behind = None
 
     def ingest_positions(self, records: list[dict]) -> None:
+        is_first_ingest = "positions" not in self._first_ingest_done
         records = self._filter_new_records("positions", records)
         latest_by_driver: dict[int, tuple[str, int]] = {}
         for rec in records:
             num = rec.get("driver_number")
             pos = rec.get("position")
             date_str = rec.get("date", "")
-            if num is None or num not in self._states or pos is None:
+            if num is None or pos is None:
                 continue
+            # Fix #6: Auto-create DriverState for unknown drivers
+            if num not in self._states:
+                self._states[num] = DriverState(driver_number=num, tla=str(num))
             new_pos = int(pos)
             date_key = date_str if date_str else "0000-01-01T00:00:00"
             if num not in latest_by_driver or date_key > latest_by_driver[num][0]:
                 latest_by_driver[num] = (date_key, new_pos)
 
         for num, (date_str, new_pos) in latest_by_driver.items():
-            try:
-                overtake_date = datetime.fromisoformat(date_str.replace("Z", "+00:00")) if date_str else datetime.now(UTC)
-            except (ValueError, TypeError):
-                overtake_date = self._latest_data_time
+            overtake_date = self._parse_date(date_str)
             if overtake_date > self._latest_data_time:
                 self._latest_data_time = overtake_date
 
@@ -274,11 +358,20 @@ class StateManager:
                     self._states[num].last_overtake_time = overtake_date
                     self._states[num].was_overtaker = True
                     self._recent_overtakes[num] = (overtake_date, True)
+                    # Fix #15: Mark as interesting action
+                    self._states[num].last_interesting_action = overtake_date
                 elif positions_gained <= -1:
                     self._states[num].last_overtake_time = overtake_date
                     self._states[num].was_overtaker = False
                     self._recent_overtakes[num] = (overtake_date, False)
+                    # Fix #15: Mark as interesting action
+                    self._states[num].last_interesting_action = overtake_date
             self._states[num].position = new_pos
+
+        # Fix #3: Clear recent overtakes after first ingest to avoid pollution
+        if is_first_ingest:
+            self._recent_overtakes.clear()
+            self._first_ingest_done.add("positions")
 
     def set_grid_positions(self, grid_positions: dict[int, int]) -> None:
         """Set start/grid position per driver (from session start order)."""
@@ -291,17 +384,14 @@ class StateManager:
         records = self._filter_new_records("laps", records)
         if not records:
             return
-        latest_date = None
+        latest_date: datetime | None = None
         latest_lap = self._lap_number
         for rec in records:
             lap = rec.get("lap_number")
             date_str = rec.get("date", "")
             if lap is None:
                 continue
-            try:
-                date = datetime.fromisoformat(date_str) if date_str else None
-            except (ValueError, TypeError):
-                date = None
+            date = self._parse_date(date_str) if date_str else None
             if date is not None and isinstance(lap, int):
                 if latest_date is None or date > latest_date:
                     latest_date = date
@@ -328,10 +418,7 @@ class StateManager:
                 continue
 
             date_str = rec.get("date", "")
-            try:
-                date = datetime.fromisoformat(date_str.replace("Z", "+00:00")) if date_str else datetime.now(UTC)
-            except (ValueError, TypeError):
-                date = datetime.now(UTC)
+            date = self._parse_date(date_str)
             if date > self._latest_data_time:
                 self._latest_data_time = date
 
@@ -343,13 +430,11 @@ class StateManager:
             )
 
     def ingest_overtakes(self, records: list[dict]) -> None:
+        is_first_ingest = "overtakes" not in self._first_ingest_done
         records = self._filter_new_records("overtakes", records)
         for rec in records:
             date_str = rec.get("date", "")
-            try:
-                date = datetime.fromisoformat(date_str.replace("Z", "+00:00")) if date_str else datetime.now(UTC)
-            except (ValueError, TypeError):
-                date = datetime.now(UTC)
+            date = self._parse_date(date_str)
             if date > self._latest_data_time:
                 self._latest_data_time = date
 
@@ -360,11 +445,24 @@ class StateManager:
                 self._recent_overtakes[overtaker] = (date, True)
                 self._states[overtaker].last_overtake_time = date
                 self._states[overtaker].was_overtaker = True
+                # Fix #15: Mark as interesting action
+                self._states[overtaker].last_interesting_action = date
 
             if overtaken and overtaken in self._states:
                 self._recent_overtakes[overtaken] = (date, False)
                 self._states[overtaken].last_overtake_time = date
                 self._states[overtaken].was_overtaker = False
+                # Fix #15: Mark as interesting action
+                self._states[overtaken].last_interesting_action = date
+
+        # Fix #3: Clear overtake recency after first ingest
+        if is_first_ingest:
+            self._recent_overtakes.clear()
+            for st in self._states.values():
+                st.last_overtake_time = None
+                st.was_overtaker = False
+                st.last_interesting_action = None
+            self._first_ingest_done.add("overtakes")
 
     def ingest_pit(self, records: list[dict]) -> None:
         """Track pit activity. OpenF1 fires on pit EXIT with duration."""
@@ -374,10 +472,7 @@ class StateManager:
                 continue
 
             date_str = rec.get("date", "")
-            try:
-                date = datetime.fromisoformat(date_str.replace("Z", "+00:00")) if date_str else datetime.now(UTC)
-            except (ValueError, TypeError):
-                date = datetime.now(UTC)
+            date = self._parse_date(date_str)
             if date > self._latest_data_time:
                 self._latest_data_time = date
 
@@ -391,10 +486,7 @@ class StateManager:
         records = self._filter_new_records("race_control", records)
         for rec in records:
             date_str = rec.get("date", "")
-            try:
-                rec_date = datetime.fromisoformat(date_str.replace("Z", "+00:00")) if date_str else datetime.now(UTC)
-            except (ValueError, TypeError):
-                rec_date = datetime.now(UTC)
+            rec_date = self._parse_date(date_str)
             if rec_date > self._latest_data_time:
                 self._latest_data_time = rec_date
 
@@ -443,11 +535,15 @@ class StateManager:
                 self._driver_flags[driver_num] = (flag, rec_date)
                 self._states[driver_num].has_active_flag = True
                 self._states[driver_num].active_flag_type = flag
+                # Fix #15: Mark as interesting action
+                self._states[driver_num].last_interesting_action = rec_date
 
             if driver_num and driver_num in self._states:
                 for kw in INCIDENT_KEYWORDS:
                     if kw in message:
                         self._states[driver_num].recent_incident_time = rec_date
+                        # Fix #15: Mark as interesting action
+                        self._states[driver_num].last_interesting_action = rec_date
                         break
 
         for st in self._states.values():
@@ -456,18 +552,24 @@ class StateManager:
             st.session_status = self._session_status
 
     def ingest_car_data(self, records: list[dict]) -> None:
+        # Fix #23: Apply _filter_new_records to car_data (highest volume endpoint)
+        records = self._filter_new_records("car_data", records)
+        
+        # Dedup to latest per driver (same pattern as intervals first-ingest)
         drs_overtake_values = {10, 12, 14}
-        per_driver: dict[int, int] = {}
+        per_driver: dict[int, tuple[str, int]] = {}  # driver_number -> (date, value)
         for rec in records:
             num = rec.get("driver_number")
             drs = rec.get("drs")
             overtake = rec.get("overtake_mode")  # 2026 if OpenF1 adds it
+            date = rec.get("date", "")
             if num is not None:
                 val = overtake if overtake is not None else drs
                 if val is not None:
-                    per_driver[num] = val
+                    if num not in per_driver or date > per_driver[num][0]:
+                        per_driver[num] = (date, val)
 
-        for num, val in per_driver.items():
+        for num, (_, val) in per_driver.items():
             if num in self._states:
                 self._states[num].drs_open = val in drs_overtake_values
                 self._states[num].overtake_mode_active = val in drs_overtake_values
@@ -488,9 +590,13 @@ class StateManager:
             if st.recent_incident_time and ref - st.recent_incident_time > incident_window:
                 st.recent_incident_time = None
 
-        stale_threshold = timedelta(seconds=120)
+        # Fix #14: Increase threshold to 300s (5 min) and skip pitting drivers
+        stale_threshold = timedelta(seconds=300)
         for num, st in self._states.items():
-            if st.last_updated and ref - st.last_updated > stale_threshold:
+            # Never mark a driver as retired if they're known to be in the pits
+            if num in self._in_pit:
+                st.is_retired = False
+            elif st.last_updated and ref - st.last_updated > stale_threshold:
                 st.is_retired = True
             else:
                 st.is_retired = False

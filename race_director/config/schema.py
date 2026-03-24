@@ -64,6 +64,8 @@ class HysteresisConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
     min_dwell_seconds: float = 12.0
     swap_improvement_threshold: float = 0.15
+    # Fix #18: Relative improvement threshold (15% = require 15% better score)
+    swap_improvement_ratio: float = 0.15
     max_switches_per_cycle: int = 1
     max_switches_per_minute: int = 6
     removal_cooldown_seconds: float = 25.0
@@ -82,6 +84,9 @@ class OrchestratorConfig(BaseModel):
     dry_run: bool = False
     manual_override_file: str = "/tmp/race_director_pause"
     startup_grace_ticks: int = 1
+    # Fix #25: Health monitoring
+    health_port: int | None = None  # Optional HTTP health endpoint port
+    watchdog_timeout_sec: float = 60.0  # Log CRITICAL if tick takes longer
 
 
 class LoggingConfig(BaseModel):
