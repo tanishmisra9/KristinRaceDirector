@@ -201,6 +201,28 @@ class Mvf1Adapter:
         log.warning("commentary_player_not_found", available_titles=all_titles)
         return None
 
+    async def get_commentary_time(self) -> float | None:
+        """Return the commentary player's interpolatedCurrentTime in seconds, or None (Fix #28 replay cursor)."""
+        try:
+            from mvf1 import MultiViewerForF1
+            mv = await asyncio.to_thread(MultiViewerForF1)
+            commentary = None
+            for p in mv.players:
+                title = (getattr(p, "stream_data", None) or {}).get("title", "")
+                if title and title.upper().replace(" ", "") in ("F1LIVE", "INTERNATIONAL"):
+                    commentary = p
+                    break
+            if commentary is None:
+                return None
+            state = getattr(commentary, "state", None) or {}
+            t = state.get("interpolatedCurrentTime") or state.get("currentTime")
+            if t is not None and isinstance(t, (int, float)) and not (math.isnan(t) or math.isinf(t)):
+                return float(t)
+            return None
+        except Exception as e:
+            log.debug("get_commentary_time_failed", error=str(e))
+            return None
+
     def _graphql_request(self, query: str, variables: dict | None = None) -> dict:
         """POST GraphQL request to MultiViewer API."""
         payload: dict = {"query": query}

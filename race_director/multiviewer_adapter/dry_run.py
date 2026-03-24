@@ -45,6 +45,10 @@ class DryRunAdapter:
     def get_current_windows(self) -> list[WindowSlot]:
         return self._slots
 
+    async def get_commentary_time(self) -> float | None:
+        """Dry run has no MultiViewer commentary player (Fix #28)."""
+        return None
+
     async def switch_window(self, slot_index: int, new_tla: str, player_id: int | None = None) -> bool:
         """Fix #1: Async for interface parity with Mvf1Adapter."""
         if 0 <= slot_index < len(self._slots):

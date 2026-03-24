@@ -53,6 +53,8 @@ class Orchestrator:
         self._recorder: TestRecorder | None = None
         if config.orchestrator.test_mode:
             self._recorder = TestRecorder(Path(config.orchestrator.test_data_dir))
+        # Fix #28: Warn once if no commentary time (replay cursor) available
+        self._commentary_time_warned: bool = False
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
@@ -130,6 +132,16 @@ class Orchestrator:
         override_path = Path(self._config.orchestrator.manual_override_file)
         if override_path.exists():
             return
+        commentary_time = None
+        if self._adapter:
+            commentary_time = await self._adapter.get_commentary_time()
+        self._provider.set_replay_cursor(commentary_time)
+        if commentary_time is None and not self._commentary_time_warned:
+            log.warning(
+                "no_commentary_time",
+                hint="Open F1 Live player in MultiViewer for replay sync",
+            )
+            self._commentary_time_warned = True
         try:
             await self._provider.poll()
         except Exception:

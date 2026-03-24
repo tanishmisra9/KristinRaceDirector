@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import structlog
@@ -72,6 +72,23 @@ class OpenF1RestProvider:
         # Test mode: raw API payloads per poll tick
         self._tick_api_data: dict[str, list[dict]] = {}
         self._session_meta: dict | None = None
+        # Fix #28: Replay cursor = session date_start + commentary player time (seconds)
+        self._replay_cursor: datetime | None = None
+
+    def set_replay_cursor(self, commentary_seconds: float | None) -> None:
+        """Compute replay cursor from commentary offset + session date_start (Fix #28)."""
+        if commentary_seconds is None or self._session_meta is None:
+            self._replay_cursor = None
+            return
+        date_start = self._session_meta.get("date_start")
+        if not date_start:
+            self._replay_cursor = None
+            return
+        try:
+            start = datetime.fromisoformat(str(date_start).replace("Z", "+00:00"))
+            self._replay_cursor = start + timedelta(seconds=float(commentary_seconds))
+        except (ValueError, TypeError):
+            self._replay_cursor = None
 
     async def start(self) -> None:
         self._running = True
@@ -98,6 +115,9 @@ class OpenF1RestProvider:
         self._poll_count += 1
         if self._config.orchestrator.test_mode:
             self._tick_api_data.clear()
+
+        # Fix #28: StateManager must see cursor before any ingest this poll
+        self._state.set_replay_cursor(self._replay_cursor)
 
         # Fix #12: Ensure client exists before any fetches (session, grid, endpoints)
         if self._client is None or self._client.is_closed:

@@ -63,6 +63,9 @@ class StateManager:
         # Latest data timestamp — used as reference time for scoring (replay/live)
         self._latest_data_time: datetime = datetime.now(UTC)
 
+        # Fix #28: Upper bound on API record dates when following a replay (MultiViewer commentary time)
+        self._replay_cursor: datetime | None = None
+
         # Lights out: SESSION STARTED from race_control
         self._lights_out: bool = False
 
@@ -100,7 +103,18 @@ class StateManager:
         self._sc_phase = "none"
         self._session_status = "Unknown"
         self._lap_number = 0
+        self._replay_cursor = None
         log.info("state_manager_reset")
+
+    def set_replay_cursor(self, cursor: datetime | None) -> None:
+        """Set max API record time for replay mode (Fix #28). None = live / no filter."""
+        self._replay_cursor = cursor
+
+    def _update_latest_time(self, date: datetime) -> None:
+        """Advance _latest_data_time, capped at replay cursor when replaying (Fix #28)."""
+        if date > self._latest_data_time:
+            if self._replay_cursor is None or date <= self._replay_cursor:
+                self._latest_data_time = date
 
     def _parse_date(self, date_str: str) -> datetime:
         """Parse ISO date string with fallback to latest data time (Fix #7).
@@ -120,7 +134,24 @@ class StateManager:
 
         First call: process ALL records to establish baseline state.
         Subsequent calls: only process new records (delta).
+
+        Fix #28: Drop records after the replay cursor (future relative to MultiViewer playback).
         """
+        if self._replay_cursor is not None:
+            filtered: list[dict] = []
+            for r in records:
+                ds = r.get("date", "")
+                if not ds:
+                    filtered.append(r)
+                    continue
+                try:
+                    rd = datetime.fromisoformat(ds.replace("Z", "+00:00"))
+                    if rd <= self._replay_cursor:
+                        filtered.append(r)
+                except (ValueError, TypeError):
+                    filtered.append(r)
+            records = filtered
+
         last_date = self._last_processed_date.get(endpoint)
 
         if last_date is None:
@@ -189,8 +220,7 @@ class StateManager:
             date_str = rec.get("date", "")
 
             date = self._parse_date(date_str)
-            if date > self._latest_data_time:
-                self._latest_data_time = date
+            self._update_latest_time(date)
 
             interval_val: float | None = None
             is_lapped = False
@@ -330,8 +360,7 @@ class StateManager:
 
         for num, (date_str, new_pos) in latest_by_driver.items():
             overtake_date = self._parse_date(date_str)
-            if overtake_date > self._latest_data_time:
-                self._latest_data_time = overtake_date
+            self._update_latest_time(overtake_date)
 
             old_pos = self._states[num].position
             if old_pos > 0 and new_pos > 0 and old_pos != new_pos:
@@ -381,8 +410,8 @@ class StateManager:
         if latest_lap != self._lap_number:
             self.set_lap_number(latest_lap)
             log.info("lap_number_updated", lap=latest_lap)
-        if latest_date is not None and latest_date > self._latest_data_time:
-            self._latest_data_time = latest_date
+        if latest_date is not None:
+            self._update_latest_time(latest_date)
 
     def set_lap_number(self, lap: int) -> None:
         self._lap_number = lap
@@ -397,8 +426,7 @@ class StateManager:
 
             date_str = rec.get("date", "")
             date = self._parse_date(date_str)
-            if date > self._latest_data_time:
-                self._latest_data_time = date
+            self._update_latest_time(date)
 
             self._states[num].location = LocationSample(
                 x=rec.get("x", 0),
@@ -413,8 +441,7 @@ class StateManager:
         for rec in records:
             date_str = rec.get("date", "")
             date = self._parse_date(date_str)
-            if date > self._latest_data_time:
-                self._latest_data_time = date
+            self._update_latest_time(date)
 
             overtaker = rec.get("overtaking_driver_number")
             overtaken = rec.get("overtaken_driver_number")
@@ -451,8 +478,7 @@ class StateManager:
 
             date_str = rec.get("date", "")
             date = self._parse_date(date_str)
-            if date > self._latest_data_time:
-                self._latest_data_time = date
+            self._update_latest_time(date)
 
             self._states[num].pit_exit_time = date
             self._states[num].in_pit = False
@@ -465,8 +491,7 @@ class StateManager:
         for rec in records:
             date_str = rec.get("date", "")
             rec_date = self._parse_date(date_str)
-            if rec_date > self._latest_data_time:
-                self._latest_data_time = rec_date
+            self._update_latest_time(rec_date)
 
             category = rec.get("category", "")
             flag = rec.get("flag")
