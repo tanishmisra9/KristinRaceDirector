@@ -171,3 +171,30 @@ def show_no_commentary() -> None:
 def show_swap_failed(tla: str, reason: str) -> None:
     """Fix #26: Show that a swap failed for a driver."""
     _print_and_log(f"[{_ts()}]  Swap failed for {tla}: {reason}")
+
+
+def show_monitor_startup() -> None:
+    """One-time banner for monitor mode."""
+    _print_and_log(
+        f"[{_ts()}]  MONITOR MODE: validating infrastructure "
+        "— scoring and camera control disabled"
+    )
+
+
+def show_monitor_tick(
+    tick: int,
+    num_drivers: int,
+    session_type: str,
+    lap: int,
+    data_fresh: bool,
+    commentary_time: float | None,
+    sc_phase: str,
+) -> None:
+    """Per-tick status line in monitor mode."""
+    fresh_str = "fresh" if data_fresh else "STALE"
+    ct_str = f"{commentary_time:.1f}s" if commentary_time is not None else "n/a"
+    _print_and_log(
+        f"[{_ts()}]  Monitor | tick {tick} | {num_drivers} drivers | "
+        f"{session_type} | lap {lap} | data: {fresh_str} | "
+        f"commentary: {ct_str} | SC: {sc_phase}"
+    )

@@ -76,7 +76,9 @@ class Orchestrator:
         else:
             display.show_connection_failed()
             return
-        if self._adapter and self._adapter.is_available():
+        if self._config.orchestrator.monitor_mode:
+            display.show_monitor_startup()
+        elif self._adapter and self._adapter.is_available():
             windows = self._adapter.get_current_windows()
             log.info("windows_detected", count=len(windows))
             if windows:
@@ -164,8 +166,35 @@ class Orchestrator:
         # Fix #4: Skip scoring/swaps if data is stale
         if not self._provider.is_data_fresh():
             log.warning("data_stale_skipping_swaps", tick=self._tick_count)
+            if self._config.orchestrator.monitor_mode:
+                display.show_monitor_tick(
+                    tick=self._tick_count,
+                    num_drivers=len(self._provider.get_driver_states()),
+                    session_type="unknown",
+                    lap=0,
+                    data_fresh=False,
+                    commentary_time=commentary_time,
+                    sc_phase=self._provider.get_sc_phase(),
+                )
             return
-        
+
+        if self._config.orchestrator.monitor_mode:
+            states = self._provider.get_driver_states()
+            session = self._provider.get_session_info()
+            sc_phase = self._provider.get_sc_phase()
+            display.show_monitor_tick(
+                tick=self._tick_count,
+                num_drivers=len(states),
+                session_type=session.session_type if session else "unknown",
+                lap=session.lap_number if session else 0,
+                data_fresh=True,
+                commentary_time=commentary_time,
+                sc_phase=sc_phase,
+            )
+            if self._tick_count % 10 == 0:
+                self._provider._log_endpoint_health()
+            return
+
         states = self._provider.get_driver_states()
         session = self._provider.get_session_info()
         if not states:

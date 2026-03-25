@@ -34,6 +34,12 @@ def _normalize_session_dir_name(meta: dict) -> str:
             session_type = "sprint"
         elif "qualifying" in name:
             session_type = "qualifying"
+        elif "practice" in name:
+            session_type = "practice"
+            for suffix in ("1", "2", "3"):
+                if suffix in name:
+                    session_type = f"practice_{suffix}"
+                    break
         else:
             session_type = "race"
 

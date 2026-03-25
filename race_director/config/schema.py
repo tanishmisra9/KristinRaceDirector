@@ -86,6 +86,7 @@ class OrchestratorConfig(BaseModel):
     watchdog_timeout_sec: float = 60.0  # Log CRITICAL if tick takes longer
     test_mode: bool = False
     test_data_dir: str = "data"
+    monitor_mode: bool = False
 
 
 class LoggingConfig(BaseModel):

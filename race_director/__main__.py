@@ -93,6 +93,11 @@ def main() -> None:
         action="store_true",
         help="Enable test mode: log all API data and decisions to data/",
     )
+    parser.add_argument(
+        "--monitor",
+        action="store_true",
+        help="Monitor mode: validate infrastructure without scoring or camera control",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     start_parser = subparsers.add_parser("start", help="Start the race director")
@@ -102,6 +107,11 @@ def main() -> None:
         "--test",
         action="store_true",
         help="Enable test mode: log all API data and decisions to data/",
+    )
+    start_parser.add_argument(
+        "--monitor",
+        action="store_true",
+        help="Monitor mode: validate infrastructure without scoring or camera control",
     )
 
     args = parser.parse_args()
@@ -114,6 +124,8 @@ def main() -> None:
             args.dry_run = False
         if not hasattr(args, "test"):
             args.test = False
+        if not hasattr(args, "monitor"):
+            args.monitor = False
 
     if args.config is None:
         if Path("config.local.yaml").exists():
@@ -126,12 +138,20 @@ def main() -> None:
         config.orchestrator.dry_run = True
     if getattr(args, "test", False):
         config.orchestrator.test_mode = True
+    if getattr(args, "monitor", False):
+        config.orchestrator.monitor_mode = True
+        config.orchestrator.dry_run = True
+        print(
+            "MONITOR MODE -- infrastructure validation only, no scoring or camera control\n",
+            flush=True,
+        )
     setup_logging(config.logging.level, config.logging.format, config.logging.file)
     log = structlog.get_logger()
     log.info(
         "starting_race_director",
         dry_run=config.orchestrator.dry_run,
         test_mode=config.orchestrator.test_mode,
+        monitor_mode=config.orchestrator.monitor_mode,
     )
     orchestrator = Orchestrator(config=config)
     try:
