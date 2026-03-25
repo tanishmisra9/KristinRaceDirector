@@ -79,16 +79,16 @@ class OpenF1RestProvider:
         """Compute replay cursor from commentary offset + session date_start (Fix #28)."""
         if commentary_seconds is None or self._session_meta is None:
             self._replay_cursor = None
-            return
-        date_start = self._session_meta.get("date_start")
-        if not date_start:
-            self._replay_cursor = None
-            return
-        try:
-            start = datetime.fromisoformat(str(date_start).replace("Z", "+00:00"))
-            self._replay_cursor = start + timedelta(seconds=float(commentary_seconds))
-        except (ValueError, TypeError):
-            self._replay_cursor = None
+        else:
+            date_start = self._session_meta.get("date_start")
+            if not date_start:
+                self._replay_cursor = None
+            else:
+                try:
+                    start = datetime.fromisoformat(str(date_start).replace("Z", "+00:00"))
+                    self._replay_cursor = start + timedelta(seconds=float(commentary_seconds))
+                except (ValueError, TypeError):
+                    self._replay_cursor = None
 
     async def start(self) -> None:
         self._running = True

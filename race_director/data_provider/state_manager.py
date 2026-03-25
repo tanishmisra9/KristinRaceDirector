@@ -109,6 +109,10 @@ class StateManager:
     def set_replay_cursor(self, cursor: datetime | None) -> None:
         """Set max API record time for replay mode (Fix #28). None = live / no filter."""
         self._replay_cursor = cursor
+        # Fix #28: when entering replay mode, clamp future reference time down to cursor.
+        # Otherwise _latest_data_time can remain at wall-clock now and retire almost all drivers.
+        if cursor is not None and self._latest_data_time > cursor:
+            self._latest_data_time = cursor
 
     def _update_latest_time(self, date: datetime) -> None:
         """Advance _latest_data_time, capped at replay cursor when replaying (Fix #28)."""

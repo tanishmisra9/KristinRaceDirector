@@ -221,7 +221,15 @@ class Orchestrator:
                 # Fix #27: Infer lights out from data in replay mode
                 # If after 5 ticks we have valid position data but no SESSION STARTED event,
                 # the race is already running and we should start managing cameras
-                if self._tick_count > 5 and any(st.position > 0 for st in states.values()):
+                replay_implies_started = (
+                    commentary_time is not None
+                    and commentary_time > 30.0
+                    and any(st.position > 0 for st in states.values())
+                )
+                delayed_fallback = self._tick_count > 5 and any(
+                    st.position > 0 for st in states.values()
+                )
+                if replay_implies_started or delayed_fallback:
                     if self._recorder:
                         self._recorder.record_event(
                             self._tick_count, "lights_out_inferred", {}
