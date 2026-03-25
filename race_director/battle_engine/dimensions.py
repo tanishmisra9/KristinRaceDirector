@@ -156,10 +156,12 @@ def score_position_importance(state: DriverState, _params: ScoringParams) -> flo
     if pos <= 0:
         return 0.0
     
-    # Special case: Leader under pressure gets full score
+    # Special case: Leader score based on gap to P2
     if pos == 1:
-        if state.interval_behind is not None and state.interval_behind < 2.0:
-            return 1.0  # Under attack — compelling
+        if state.interval_behind is None:
+            return 0.3  # No data, probably not interesting
+        if state.interval_behind < 1.0:
+            return 0.85  # Genuinely under attack
         return 0.4  # Cruising — not interesting as an onboard
     
     # Fix #8: Smooth decay function for all other positions
