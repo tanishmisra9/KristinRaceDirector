@@ -55,6 +55,8 @@ class Orchestrator:
             self._recorder = TestRecorder(Path(config.orchestrator.test_data_dir))
         # Fix #28: Warn once if no commentary time (replay cursor) available
         self._commentary_time_warned: bool = False
+        self._last_session_key: int | None = None
+        self._was_data_stale: bool = False
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
@@ -151,9 +153,18 @@ class Orchestrator:
             if self._tick_count % 6 == 0:
                 display.show_poll_error()
             return
+        meta = self._provider.get_session_meta()
+        raw_key = meta.get("session_key") if meta else None
+        try:
+            current_key: int | None = int(raw_key) if raw_key is not None else None
+        except (TypeError, ValueError):
+            current_key = None
+        if current_key is not None and current_key != self._last_session_key:
+            if self._last_session_key is not None:
+                display.show_session_changed(self._last_session_key, current_key)
+            self._last_session_key = current_key
 
         if self._config.orchestrator.test_mode and self._recorder:
-            meta = self._provider.get_session_meta()
             if meta:
                 self._recorder.init_session(meta)
             elif not self._recorder.is_initialized:
@@ -167,18 +178,33 @@ class Orchestrator:
         if not self._provider.is_data_fresh():
             log.warning("data_stale_skipping_swaps", tick=self._tick_count)
             if self._config.orchestrator.monitor_mode:
-                display.show_monitor_tick(
-                    tick=self._tick_count,
-                    num_drivers=len(self._provider.get_driver_states()),
-                    session_type="unknown",
-                    lap=0,
-                    data_fresh=False,
-                    commentary_time=commentary_time,
-                    sc_phase=self._provider.get_sc_phase(),
-                )
+                states = self._provider.get_driver_states()
+                session = self._provider.get_session_info()
+                sc_phase = self._provider.get_sc_phase()
+                should_show_tick = False
+                if not self._was_data_stale:
+                    display.show_data_stale()
+                    self._was_data_stale = True
+                    should_show_tick = True
+                elif self._tick_count % 30 == 0:
+                    should_show_tick = True
+                if should_show_tick:
+                    display.show_monitor_tick(
+                        tick=self._tick_count,
+                        num_drivers=len(states),
+                        session_type=session.session_type if session else "unknown",
+                        lap=session.lap_number if session else 0,
+                        data_fresh=False,
+                        commentary_time=commentary_time,
+                        sc_phase=sc_phase,
+                        session_key=current_key,
+                    )
             return
 
         if self._config.orchestrator.monitor_mode:
+            if self._was_data_stale:
+                display.show_data_fresh_restored()
+                self._was_data_stale = False
             states = self._provider.get_driver_states()
             session = self._provider.get_session_info()
             sc_phase = self._provider.get_sc_phase()
@@ -190,6 +216,7 @@ class Orchestrator:
                 data_fresh=True,
                 commentary_time=commentary_time,
                 sc_phase=sc_phase,
+                session_key=current_key,
             )
             if self._tick_count % 10 == 0:
                 self._provider._log_endpoint_health()

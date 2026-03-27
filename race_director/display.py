@@ -181,6 +181,26 @@ def show_monitor_startup() -> None:
     )
 
 
+def show_session_changed(old_key: int | None, new_key: int) -> None:
+    """Show OpenF1 session key change."""
+    _print_and_log(f"[{_ts()}]  Session changed: {old_key} -> {new_key}")
+
+
+def show_token_refreshed(expires_in: int) -> None:
+    """Show token refresh event."""
+    _print_and_log(f"[{_ts()}]  Token refreshed (expires in {expires_in}s)")
+
+
+def show_data_stale() -> None:
+    """Show one-time stale-data transition line."""
+    _print_and_log(f"[{_ts()}]  Data stale - critical endpoint failing")
+
+
+def show_data_fresh_restored() -> None:
+    """Show one-time stale->fresh transition line."""
+    _print_and_log(f"[{_ts()}]  Data freshness restored")
+
+
 def show_monitor_tick(
     tick: int,
     num_drivers: int,
@@ -189,12 +209,23 @@ def show_monitor_tick(
     data_fresh: bool,
     commentary_time: float | None,
     sc_phase: str,
+    session_key: int | None = None,
 ) -> None:
     """Per-tick status line in monitor mode."""
     fresh_str = "fresh" if data_fresh else "STALE"
-    ct_str = f"{commentary_time:.1f}s" if commentary_time is not None else "n/a"
-    _print_and_log(
-        f"[{_ts()}]  Monitor | tick {tick} | {num_drivers} drivers | "
-        f"{session_type} | lap {lap} | data: {fresh_str} | "
-        f"commentary: {ct_str} | SC: {sc_phase}"
-    )
+    parts = [
+        f"tick {tick}",
+        f"{num_drivers} drivers",
+        session_type,
+    ]
+    if session_key is not None:
+        parts.append(f"session: {session_key}")
+    if lap > 0:
+        parts.append(f"lap {lap}")
+    parts.append(f"data: {fresh_str}")
+    if commentary_time is not None:
+        parts.append(f"commentary: {commentary_time:.1f}s")
+    if sc_phase.lower() != "none":
+        parts.append(f"SC: {sc_phase}")
+
+    _print_and_log(f"[{_ts()}]  Monitor | {' | '.join(parts)}")
