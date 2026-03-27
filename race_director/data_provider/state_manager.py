@@ -516,6 +516,7 @@ class StateManager:
                 else:
                     self._safety_car = False
                     self._vsc = False
+                    self._sc_phase = "none"
 
             if category == "SessionStatus":
                 if "started" in message:
@@ -524,6 +525,10 @@ class StateManager:
                     if status_val.lower() in message:
                         self._session_status = status_val
                         break
+                if "ended" in message or "finalised" in message:
+                    self._safety_car = False
+                    self._vsc = False
+                    self._sc_phase = "none"
 
             # Detect green flag / track clear - clears SC and VSC state
             if flag == "GREEN" and "track clear" in message:

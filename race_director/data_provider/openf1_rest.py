@@ -178,9 +178,12 @@ class OpenF1RestProvider:
                     self._data_stale = False
                 self._session_key = new_key
                 name = s.get("session_name", "")
-                stype = "Sprint" if "sprint" in name.lower() else "Race"
-                if "qualifying" in name.lower():
+                lower_name = name.lower()
+                stype = "Sprint" if "sprint" in lower_name else "Race"
+                if "qualifying" in lower_name:
                     stype = "Qualifying"
+                elif "practice" in lower_name:
+                    stype = "Practice"
                 self._state.set_session(SessionInfo(session_type=stype))
         except httpx.HTTPError as e:
             log.debug("session_fetch_failed", error=str(e))
@@ -280,6 +283,8 @@ class OpenF1RestProvider:
             )
             if r.status_code == 401:
                 log.warning("openf1_unauthorized_live_data_requires_subscription")
+                return
+            if r.status_code == 404:
                 return
             r.raise_for_status()
             data = r.json()
