@@ -502,7 +502,7 @@ class StateManager:
             message = (rec.get("message", "") or "").lower()
             driver_num = rec.get("driver_number")
 
-            if category == "SafetyCar":
+            if category == "SafetyCar" and not is_first_ingest:
                 if "ending" in message or "in this lap" in message:
                     self._sc_phase = "ending"
                 elif "virtual safety car" in message or "vsc" in message:
@@ -519,7 +519,7 @@ class StateManager:
                     self._sc_phase = "none"
 
             if category == "SessionStatus":
-                if "started" in message:
+                if "started" in message and not is_first_ingest:
                     self._lights_out = True
                 for status_val in _SESSION_STATUS_LABELS:
                     if status_val.lower() in message:
@@ -531,14 +531,15 @@ class StateManager:
                     self._sc_phase = "none"
 
             # Detect green flag / track clear - clears SC and VSC state
-            if flag == "GREEN" and "track clear" in message:
-                self._safety_car = False
-                self._vsc = False
-                self._sc_phase = "green"
-            if "overtake enabled" in message:
-                self._safety_car = False
-                self._vsc = False
-                self._sc_phase = "green"
+            if not is_first_ingest:
+                if flag == "GREEN" and "track clear" in message:
+                    self._safety_car = False
+                    self._vsc = False
+                    self._sc_phase = "green"
+                if "overtake enabled" in message:
+                    self._safety_car = False
+                    self._vsc = False
+                    self._sc_phase = "green"
 
             if driver_num and driver_num in self._states and flag:
                 self._driver_flags[driver_num] = (flag, rec_date)
@@ -566,6 +567,9 @@ class StateManager:
             self._safety_car = False
             self._vsc = False
             self._sc_phase = "none"
+            for st in self._states.values():
+                st.safety_car_active = False
+                st.vsc_active = False
             self._first_ingest_done.add("race_control")
 
     def ingest_car_data(self, records: list[dict]) -> None:
