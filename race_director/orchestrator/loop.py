@@ -78,7 +78,9 @@ class Orchestrator:
         else:
             display.show_connection_failed()
             return
-        if self._config.orchestrator.monitor_mode:
+        if self._config.orchestrator.quali_mode:
+            display.show_quali_startup()
+        elif self._config.orchestrator.monitor_mode:
             display.show_monitor_startup()
         elif self._adapter and self._adapter.is_available():
             windows = self._adapter.get_current_windows()
@@ -177,7 +179,7 @@ class Orchestrator:
         # Fix #4: Skip scoring/swaps if data is stale
         if not self._provider.is_data_fresh():
             log.warning("data_stale_skipping_swaps", tick=self._tick_count)
-            if self._config.orchestrator.monitor_mode:
+            if self._config.orchestrator.monitor_mode or self._config.orchestrator.quali_mode:
                 states = self._provider.get_driver_states()
                 session = self._provider.get_session_info()
                 sc_phase = self._provider.get_sc_phase()
@@ -199,6 +201,45 @@ class Orchestrator:
                         sc_phase=sc_phase,
                         session_key=current_key,
                     )
+            return
+
+        if self._config.orchestrator.quali_mode:
+            if self._was_data_stale:
+                display.show_data_fresh_restored()
+                self._was_data_stale = False
+            states = self._provider.get_driver_states()
+            session = self._provider.get_session_info()
+            sc_phase = self._provider.get_sc_phase()
+            ref_time = self._provider.get_reference_time()
+            session_tlas = self._provider.get_session_tlas()
+            excluded: set[str] = set()
+            if session_tlas:
+                all_tlas = {st.tla.upper() for st in states.values()}
+                excluded = all_tlas - session_tlas
+            ranked = self._scorer.score_all(
+                states,
+                [],
+                session=session,
+                cooldown_seconds=self._config.hysteresis.removal_cooldown_seconds,
+                reference_time=ref_time,
+                excluded_tlas=excluded,
+            )
+            if self._recorder:
+                self._recorder.record_scoring(self._tick_count, ranked, [])
+            display.show_monitor_tick(
+                tick=self._tick_count,
+                num_drivers=len(states),
+                session_type=session.session_type if session else "unknown",
+                lap=session.lap_number if session else 0,
+                data_fresh=True,
+                commentary_time=commentary_time,
+                sc_phase=sc_phase,
+                session_key=current_key,
+            )
+            if self._tick_count % 6 == 0:
+                display.show_scoring_snapshot([(r.tla, r.total_score) for r in ranked])
+            if self._tick_count % 10 == 0:
+                self._provider._log_endpoint_health()
             return
 
         if self._config.orchestrator.monitor_mode:

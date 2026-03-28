@@ -181,6 +181,14 @@ def show_monitor_startup() -> None:
     )
 
 
+def show_quali_startup() -> None:
+    """One-time banner for qualifying dry-score mode."""
+    _print_and_log(
+        f"[{_ts()}]  QUALIFYING MODE: dry-scoring with full data logging "
+        "-- no camera control"
+    )
+
+
 def show_session_changed(old_key: int | None, new_key: int) -> None:
     """Show OpenF1 session key change."""
     _print_and_log(f"[{_ts()}]  Session changed: {old_key} -> {new_key}")

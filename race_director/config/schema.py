@@ -87,6 +87,7 @@ class OrchestratorConfig(BaseModel):
     test_mode: bool = False
     test_data_dir: str = "data"
     monitor_mode: bool = False
+    quali_mode: bool = False
 
 
 class LoggingConfig(BaseModel):
