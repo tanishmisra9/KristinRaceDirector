@@ -382,6 +382,9 @@ class StateManager:
                     # Fix #15: Mark as interesting action
                     self._states[num].last_interesting_action = overtake_date
             self._states[num].position = new_pos
+            # Fix #29: Update last_updated from position data so drivers don't
+            # get falsely marked as retired when intervals endpoint is down (404).
+            self._states[num].last_updated = overtake_date
 
         # Fix #3: Clear recent overtakes after first ingest to avoid pollution
         if is_first_ingest:
