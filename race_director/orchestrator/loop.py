@@ -166,6 +166,7 @@ class Orchestrator:
                 display.show_session_changed(self._last_session_key, current_key)
             self._last_session_key = current_key
 
+        api_data: dict[str, list[dict]] = {}
         if self._config.orchestrator.test_mode and self._recorder:
             if meta:
                 self._recorder.init_session(meta)
@@ -226,6 +227,15 @@ class Orchestrator:
             )
             if self._recorder:
                 self._recorder.record_scoring(self._tick_count, ranked, [])
+                self._recorder.record_quali_validation_tick(
+                    tick=self._tick_count,
+                    session_key=current_key,
+                    data_fresh=self._provider.is_data_fresh(),
+                    driver_state_count=len(states),
+                    ranked_count=len(ranked),
+                    qualifying_phase=self._provider.get_latest_qualifying_phase(),
+                    session_result_rows=len(api_data.get("session_result", [])),
+                )
             display.show_monitor_tick(
                 tick=self._tick_count,
                 num_drivers=len(states),

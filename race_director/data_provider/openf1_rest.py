@@ -72,6 +72,7 @@ class OpenF1RestProvider:
         # Test mode: raw API payloads per poll tick
         self._tick_api_data: dict[str, list[dict]] = {}
         self._session_meta: dict | None = None
+        self._latest_qualifying_phase: int | None = None
         # Fix #28: Replay cursor = session date_start + commentary player time (seconds)
         self._replay_cursor: datetime | None = None
 
@@ -136,6 +137,9 @@ class OpenF1RestProvider:
             if handler is not None:
                 await self._fetch(self._client, endpoint, handler, headers)
                 await asyncio.sleep(RATE_LIMIT_DELAY_SEC)
+
+        if self._config.orchestrator.quali_mode:
+            await self._fetch_session_result(headers)
         
         self._state.expire_stale_events()
         
@@ -172,6 +176,7 @@ class OpenF1RestProvider:
                     self._grid_fetched = False
                     # Fix #2: Full state reset on session change, not just filters
                     self._state.reset()
+                    self._latest_qualifying_phase = None
                     # Also reset endpoint health tracking for new session
                     self._consecutive_failures.clear()
                     self._last_success.clear()
@@ -263,7 +268,39 @@ class OpenF1RestProvider:
                 pass
 
     def _ingest_race_control(self, records: list[dict]) -> None:
+        for rec in records:
+            phase = rec.get("qualifying_phase")
+            if phase is None:
+                continue
+            try:
+                phase_int = int(phase)
+            except (TypeError, ValueError):
+                continue
+            if phase_int in (1, 2, 3):
+                self._latest_qualifying_phase = phase_int
         self._state.ingest_race_control(records)
+
+    async def _fetch_session_result(self, headers: dict[str, str]) -> None:
+        """Fetch qualifying standings snapshots for quali validation mode."""
+        if not self._session_key or self._client is None:
+            return
+        url = f"{self._config.openf1.base_url}/session_result"
+        try:
+            r = await self._client.get(
+                url,
+                params={"session_key": self._session_key},
+                headers=headers,
+            )
+            if r.status_code == 401:
+                return
+            if r.status_code == 404:
+                return
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, list) and self._config.orchestrator.test_mode:
+                self._tick_api_data["session_result"] = list(data)
+        except httpx.HTTPError as e:
+            log.debug("session_result_fetch_failed", error=str(e))
 
     async def _fetch(
         self,
@@ -363,3 +400,7 @@ class OpenF1RestProvider:
         out = dict(self._tick_api_data)
         self._tick_api_data.clear()
         return out
+
+    def get_latest_qualifying_phase(self) -> int | None:
+        """Most recent qualifying phase seen in race_control payloads."""
+        return self._latest_qualifying_phase

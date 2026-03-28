@@ -59,6 +59,7 @@ class TestRecorder:
         self._session_dir: Path | None = None
         self._swaps_file: Any = None
         self._events_file: Any = None
+        self._quali_validation_file: Any = None
         self._initialized = False
         self._pending_unknown_dir: Path | None = None
 
@@ -91,6 +92,11 @@ class TestRecorder:
 
                 self._swaps_file = open(self._session_dir / "swaps.jsonl", "a", encoding="utf-8")
                 self._events_file = open(self._session_dir / "events.jsonl", "a", encoding="utf-8")
+                self._quali_validation_file = open(
+                    self._session_dir / "quali_validation.jsonl",
+                    "a",
+                    encoding="utf-8",
+                )
                 self._initialized = True
                 log.info("test_recorder_session", path=str(self._session_dir))
                 return
@@ -103,6 +109,8 @@ class TestRecorder:
                         self._swaps_file.close()
                     if self._events_file:
                         self._events_file.close()
+                    if self._quali_validation_file:
+                        self._quali_validation_file.close()
                     shutil.move(str(self._pending_unknown_dir), str(new_dir))
                     self._session_dir = new_dir
                     self._pending_unknown_dir = None
@@ -112,6 +120,11 @@ class TestRecorder:
                     )
                     self._swaps_file = open(self._session_dir / "swaps.jsonl", "a", encoding="utf-8")
                     self._events_file = open(self._session_dir / "events.jsonl", "a", encoding="utf-8")
+                    self._quali_validation_file = open(
+                        self._session_dir / "quali_validation.jsonl",
+                        "a",
+                        encoding="utf-8",
+                    )
                     log.info("test_recorder_renamed", path=str(self._session_dir))
         except Exception as e:
             log.warning("test_recorder_init_failed", error=str(e))
@@ -220,6 +233,35 @@ class TestRecorder:
         except Exception as e:
             log.warning("test_recorder_event_failed", tick=tick, error=str(e))
 
+    def record_quali_validation_tick(
+        self,
+        tick: int,
+        session_key: int | None,
+        data_fresh: bool,
+        driver_state_count: int,
+        ranked_count: int,
+        qualifying_phase: int | None,
+        session_result_rows: int,
+    ) -> None:
+        """Append a per-tick qualifying validation line."""
+        if not self._quali_validation_file:
+            return
+        try:
+            line = {
+                "tick": tick,
+                "wall_time": datetime.now(UTC).isoformat(),
+                "session_key": session_key,
+                "data_fresh": data_fresh,
+                "driver_state_count": driver_state_count,
+                "ranked_count": ranked_count,
+                "qualifying_phase": qualifying_phase,
+                "session_result_rows": session_result_rows,
+            }
+            self._quali_validation_file.write(json.dumps(line, default=str) + "\n")
+            self._quali_validation_file.flush()
+        except Exception as e:
+            log.warning("test_recorder_quali_validation_failed", tick=tick, error=str(e))
+
     @property
     def session_dir(self) -> Path | None:
         return self._session_dir
@@ -237,5 +279,8 @@ class TestRecorder:
             if self._events_file:
                 self._events_file.close()
                 self._events_file = None
+            if self._quali_validation_file:
+                self._quali_validation_file.close()
+                self._quali_validation_file = None
         except Exception as e:
             log.warning("test_recorder_close_failed", error=str(e))
