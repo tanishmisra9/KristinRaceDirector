@@ -45,3 +45,6 @@ capture_*.json
 
 # Test mode data capture
 data/
+
+# Local analysis outputs
+analysis/

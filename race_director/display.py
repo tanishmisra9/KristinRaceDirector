@@ -136,6 +136,11 @@ def show_racing_resumed() -> None:
     _print_and_log(f"[{_ts()}]  Green flag - cameras active")
 
 
+def show_chequered_flag() -> None:
+    """Show chequered flag / session end."""
+    _print_and_log(f"[{_ts()}]  Chequered flag - session complete")
+
+
 def show_poll_error() -> None:
     """Show connection/poll error."""
     _print_and_log(f"[{_ts()}]  Connection issue - retrying...")

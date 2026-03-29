@@ -379,6 +379,9 @@ class OpenF1RestProvider:
     def is_lights_out(self) -> bool:
         return self._state.is_lights_out()
 
+    def has_session_started_in_history(self) -> bool:
+        return self._state.has_session_started_in_history()
+
     def get_driver_states(self):
         return self._state.get_driver_states()
 
@@ -390,6 +393,9 @@ class OpenF1RestProvider:
 
     def get_sc_phase(self) -> str:
         return self._state.get_sc_phase()
+
+    def get_session_status(self) -> str:
+        return self._state.get_session_status()
 
     def get_session_meta(self) -> dict | None:
         """Raw session dict from OpenF1 /sessions (first row), for test recorder naming."""

@@ -68,6 +68,9 @@ class StateManager:
 
         # Lights out: SESSION STARTED from race_control
         self._lights_out: bool = False
+        # Fix #30: Track whether SESSION STARTED has ever appeared in race_control,
+        # including first ingest, so replay inference can be safely gated.
+        self._session_started_historical: bool = False
 
         # SC phase for display notifications: "none", "deployed", "ending", "green"
         self._sc_phase: str = "none"
@@ -80,9 +83,17 @@ class StateManager:
         """True if SESSION STARTED (lights out) has been detected."""
         return self._lights_out
 
+    def has_session_started_in_history(self) -> bool:
+        """True if SESSION STARTED appeared in any race_control data, including first ingest."""
+        return self._session_started_historical
+
     def get_sc_phase(self) -> str:
         """Return current SC phase: 'none', 'deployed', 'ending', 'green'."""
         return self._sc_phase
+
+    def get_session_status(self) -> str:
+        """Return current session status string."""
+        return self._session_status
 
     def reset(self) -> None:
         """Full reset of all per-driver state — called on session change (Fix #2)."""
@@ -98,6 +109,7 @@ class StateManager:
         self._last_processed_date.clear()
         self._latest_data_time = datetime.now(UTC)
         self._lights_out = False
+        self._session_started_historical = False
         self._safety_car = False
         self._vsc = False
         self._sc_phase = "none"
@@ -522,6 +534,8 @@ class StateManager:
                     self._sc_phase = "none"
 
             if category == "SessionStatus":
+                if "started" in message:
+                    self._session_started_historical = True
                 if "started" in message and not is_first_ingest:
                     self._lights_out = True
                 for status_val in _SESSION_STATUS_LABELS:

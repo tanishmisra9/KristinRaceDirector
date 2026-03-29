@@ -57,6 +57,7 @@ class Orchestrator:
         self._commentary_time_warned: bool = False
         self._last_session_key: int | None = None
         self._was_data_stale: bool = False
+        self._session_ended_displayed: bool = False
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
@@ -332,6 +333,7 @@ class Orchestrator:
                     commentary_time is not None
                     and commentary_time > 30.0
                     and any(st.position > 0 for st in states.values())
+                    and self._provider.has_session_started_in_history()
                 )
                 delayed_fallback = self._tick_count > 5 and any(
                     st.position > 0 for st in states.values()
@@ -405,6 +407,24 @@ class Orchestrator:
             self._last_sc_phase = sc_phase
 
         if is_neutralized:
+            on_screen = [w.current_tla for w in windows if w.current_tla]
+            if self._tick_count % 6 == 0:
+                display.show_tick_status(self._tick_count, on_screen)
+            log.info("tick_end", tick=self._tick_count, on_screen=on_screen, swaps_executed=0)
+            return
+
+        # Fix #31: Detect session end and stop swap logic.
+        session_status = self._provider.get_session_status()
+        if session_status == "Ended":
+            if not self._session_ended_displayed:
+                display.show_chequered_flag()
+                if self._recorder:
+                    self._recorder.record_event(
+                        self._tick_count,
+                        "session_ended",
+                        {},
+                    )
+                self._session_ended_displayed = True
             on_screen = [w.current_tla for w in windows if w.current_tla]
             if self._tick_count % 6 == 0:
                 display.show_tick_status(self._tick_count, on_screen)
