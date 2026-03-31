@@ -1,4 +1,4 @@
-# KristinRaceDirector
+# Director
 
 Automation daemon for MultiViewer for F1 that dynamically rotates onboard camera windows during live races.
 

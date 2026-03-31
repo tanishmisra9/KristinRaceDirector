@@ -1,1 +1,1 @@
-"""KristinRaceDirector - MultiViewer for F1 camera automation daemon."""
+"""Director - MultiViewer for F1 camera automation daemon."""

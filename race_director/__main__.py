@@ -27,8 +27,8 @@ def setup_logging(level: str, fmt: str, log_file: str | None) -> None:
 
     # Default: write structlog to file, keep stdout clean for display.py
     if log_file is None:
-        log_file = "kristin.log"
-    if log_file == "kristin.log":
+        log_file = "director.log"
+    if log_file == "director.log":
         # Fix #24: Use Path.write_text instead of unnamed open().close()
         Path(log_file).write_text("")
 
@@ -74,16 +74,14 @@ def main() -> None:
     BANNER = """
 ╔══════════════════════════════════════════════════════╗
 ║                                                      ║
-║            KRISTIN RACE DIRECTOR                     ║
+║                    DIRECTOR                          ║
 ║       MultiViewer Onboard Camera Automation          ║
-║                                                      ║
-║               Formula 1 @ Purdue                     ║
 ║                                                      ║
 ╚══════════════════════════════════════════════════════╝
 """
     print(BANNER, flush=True)
     parser = argparse.ArgumentParser(
-        prog="kristin",
+        prog="director",
         description="MultiViewer for F1 camera automation",
     )
     parser.add_argument("-c", "--config", default=None, help="Config file path")

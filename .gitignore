@@ -37,7 +37,7 @@ ENV/
 
 # Logs
 *.log
-kristin.log
+director.log
 race_director.log
 
 # Data capture output

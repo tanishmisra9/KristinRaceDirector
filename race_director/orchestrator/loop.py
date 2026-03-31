@@ -21,7 +21,7 @@ from race_director.orchestrator.hysteresis import HysteresisEngine
 log = structlog.get_logger()
 
 # Fix #25: Heartbeat file location
-HEARTBEAT_FILE = Path("/tmp/kristin_heartbeat")
+HEARTBEAT_FILE = Path("/tmp/director_heartbeat")
 
 
 class Orchestrator:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Data capture script for KristinRaceDirector.
+Data capture script for Director.
 
 Records timestamped data from all OpenF1 API endpoints during a replay/live session.
 Outputs a single JSON file that can be analyzed to build a better scoring algorithm.
